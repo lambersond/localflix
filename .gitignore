@@ -1,4 +1,5 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+.claude
 
 # dependencies
 /node_modules
@@ -39,3 +40,21 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local SQLite database
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# local data dir (sqlite + cached artwork when DATABASE_PATH/IMAGE_DIR point here)
+/data
+
+# local media files (sample + user library) — keep the folder + README, ignore the videos
+/public/sample/*.mp4
+/media/*
+!/media/README.md
+
+# user-uploaded profile avatars — keep the folder, ignore the images
+/public/avatars/*
+!/public/avatars/.gitkeep

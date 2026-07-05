@@ -1,0 +1,32 @@
+# Synology DS425+ Container Manager — import as a "Project".
+# Replace <dockerhub-user> with your Docker Hub username, and adjust the host
+# paths under `volumes` to match your NAS shared folders. See DEPLOY.md.
+services:
+  personal-media-host:
+    image: docker.io/<dockerhub-user>/personal-media-host:latest
+    container_name: personal-media-host
+    restart: unless-stopped
+    ports:
+      - "3000:3000"            # host:container — change the left side to remap
+    environment:
+      # Required for real TMDB scans (metadata + artwork). Boot works without it.
+      TMDB_API_TOKEN: "REPLACE_WITH_YOUR_TMDB_V4_READ_TOKEN"
+      # Daily scan hour, local time (0-23). Set to "off" to disable.
+      SCAN_AT_HOUR: "3"
+      # Set "true" once to scan on first boot and populate the library.
+      SCAN_ON_STARTUP: "false"
+      # These match the image defaults; listed for clarity. Do not point
+      # DATABASE_PATH/IMAGE_DIR at a network share (see /data note below).
+      DATABASE_PATH: "/data/media.sqlite"
+      MEDIA_DIR: "/media"
+      IMAGE_DIR: "/data/images"
+    volumes:
+      # Your library — the externally-managed CMS share. Read-write so the admin
+      # page's in-container transcode/prep can write converted files back.
+      - /volume1/media:/media:rw
+      # SQLite DB + WAL. MUST be a LOCAL NAS volume (not SMB/NFS) — WAL needs
+      # real file locking. Cached artwork lives under here too.
+      - /volume1/docker/personal-media-host/data:/data:rw
+      # Persist uploaded profile avatars across image updates/recreations
+      # (the image ships this dir empty, so nothing is shadowed).
+      - /volume1/docker/personal-media-host/avatars:/app/public/avatars:rw

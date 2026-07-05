@@ -1,0 +1,29 @@
+# Rebuilt inside the image
+node_modules
+.next
+out
+build
+
+# Local-only state (provided via volumes / runtime env)
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite-journal
+data
+media
+public/avatars/*
+!public/avatars/.gitkeep
+public/sample/*.mp4
+
+# Secrets — pass at runtime with -e / --env-file, never bake into the image
+.env*
+
+# VCS / tooling / docs
+.git
+.gitignore
+.claude
+.DS_Store
+npm-debug.log*
+Dockerfile
+.dockerignore
+README.md
