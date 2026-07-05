@@ -71,7 +71,7 @@ Prereqs on the NAS: create the shared folders for the library and app data — s
 1. **Container Manager → Project → Create.**
 2. Upload [`compose.yaml`](compose.yaml) from this repo and edit it for your NAS:
    - `image:` → `docker.io/<dockerhub-user>/personal-media-host:latest`
-   - the three `volumes:` host paths (`/media`, `/data`, avatars)
+   - the two `volumes:` host paths (`/media` and `/data`)
    - `TMDB_API_TOKEN` (your TMDB v4 read token)
    - `SCAN_ON_STARTUP: "true"` **for the first run** (then set back to `"false"`)
 3. **Build/Start** the project. Container Manager pulls the image from Docker Hub

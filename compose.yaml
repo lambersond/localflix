@@ -24,9 +24,7 @@ services:
       # Your library — the externally-managed CMS share. Read-write so the admin
       # page's in-container transcode/prep can write converted files back.
       - /volume1/media:/media:rw
-      # SQLite DB + WAL. MUST be a LOCAL NAS volume (not SMB/NFS) — WAL needs
-      # real file locking. Cached artwork lives under here too.
+      # SQLite DB + WAL, cached artwork (/data/images), AND uploaded profile
+      # avatars (/data/avatars) all live here — one mount persists everything.
+      # MUST be a LOCAL NAS volume (not SMB/NFS) — WAL needs real file locking.
       - /volume1/docker/personal-media-host/data:/data:rw
-      # Persist uploaded profile avatars across image updates/recreations
-      # (the image ships this dir empty, so nothing is shadowed).
-      - /volume1/docker/personal-media-host/avatars:/app/public/avatars:rw

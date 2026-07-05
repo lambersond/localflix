@@ -15,15 +15,18 @@ import {
   MAX_AVATAR_BYTES,
   MAX_AVATAR_MB,
 } from "@/lib/avatar";
+import { AVATAR_DIR, localAvatarFile } from "@/lib/avatar-store";
 import { ACTIVE_PROFILE_COOKIE, getActiveProfileId } from "@/lib/profile";
 
 export interface ProfileFormState {
   error?: string;
 }
 
-const AVATAR_DIR = join(process.cwd(), "public", "avatars");
-
-/** Persist an uploaded avatar to public/avatars and return its public path. */
+/**
+ * Persist an uploaded avatar to AVATAR_DIR and return its URL. The file is served
+ * by the `/avatars/[file]` route handler (not from public/, which Next won't
+ * serve for files written after startup).
+ */
 async function saveAvatar(file: File | null): Promise<string | null> {
   if (!file || file.size === 0) return null;
   const ext = ALLOWED_AVATAR_TYPES.get(file.type);
@@ -41,8 +44,10 @@ async function saveAvatar(file: File | null): Promise<string | null> {
 /** Best-effort delete of a previously-stored avatar file. */
 async function removeAvatar(avatarPath: string | null) {
   if (!avatarPath?.startsWith("/avatars/")) return;
+  const file = localAvatarFile(avatarPath.slice("/avatars/".length));
+  if (!file) return;
   try {
-    await unlink(join(process.cwd(), "public", avatarPath));
+    await unlink(file);
   } catch {
     // ignore missing files
   }
@@ -55,6 +60,12 @@ async function setActiveCookie(id: number) {
     path: "/",
     maxAge: 60 * 60 * 24 * 365,
   });
+}
+
+/** Read a text field from FormData as a trimmed string (File values become ""). */
+function formText(formData: FormData, key: string): string {
+  const value = formData.get(key);
+  return typeof value === "string" ? value.trim() : "";
 }
 
 /** Form action: set the active profile cookie. */
@@ -72,7 +83,7 @@ export async function createProfileAction(
   _prev: ProfileFormState,
   formData: FormData,
 ): Promise<ProfileFormState> {
-  const name = String(formData.get("name") ?? "").trim();
+  const name = formText(formData, "name");
   if (!name) return { error: "Please enter a name." };
 
   let avatarPath: string | null;
@@ -99,7 +110,7 @@ export async function updateProfileAction(
   formData: FormData,
 ): Promise<ProfileFormState> {
   const id = Number(formData.get("profileId"));
-  const name = String(formData.get("name") ?? "").trim();
+  const name = formText(formData, "name");
   if (!Number.isInteger(id) || !name) return { error: "Please enter a name." };
 
   const existing = db.select().from(profiles).where(eq(profiles.id, id)).get();

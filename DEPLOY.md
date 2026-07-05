@@ -69,8 +69,8 @@ transcodes, and artwork caching, and to see the last scan time.
 - **First run is empty.** The DB is created fresh; populate it with a scan
   (`SCAN_ON_STARTUP=true` or the admin page) — a valid `TMDB_API_TOKEN` is
   required for metadata + artwork.
-- **Avatars** are stored in the image at `/app/public/avatars` and are lost when
-  you recreate the container on a new image. To persist them, also bind-mount a
-  NAS folder to `/app/public/avatars` (commented example in `compose.yaml`).
+- **Avatars** are stored under `/data/avatars` and served by the app's
+  `/avatars` route, so the single `/data` mount persists them — no separate
+  avatar mount is needed.
 - **Time zone:** `SCAN_AT_HOUR` is local time. If the daily scan fires at the
   wrong hour, set the container `TZ` env (e.g. `TZ=America/New_York`).

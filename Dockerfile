@@ -27,6 +27,7 @@ ENV NODE_ENV=production \
     DATABASE_PATH=/data/media.sqlite \
     MEDIA_DIR=/media \
     IMAGE_DIR=/data/images \
+    AVATAR_DIR=/data/avatars \
     FFMPEG_PATH=/usr/bin/ffmpeg
 
 # System ffmpeg used by the transcode job + CLI.
@@ -40,9 +41,10 @@ COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/drizzle ./drizzle
 
-# Mount points: /data (sqlite), /data/images (cached artwork — can be its own
-# bind-mount / disk), and /media (your library, NAS bind-mount).
-RUN mkdir -p /data /data/images /media ./public/avatars
+# Mount points: /data (sqlite + cached artwork + uploaded avatars) and /media
+# (your library, NAS bind-mount). /data/avatars is served by the /avatars route,
+# so it persists via the /data volume — no separate public/ mount needed.
+RUN mkdir -p /data /data/images /data/avatars /media
 
 VOLUME ["/data", "/data/images", "/media"]
 EXPOSE 3000
