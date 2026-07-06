@@ -9,7 +9,7 @@ export default function MoviesPage() {
   const first = getMoviesPage(null, PAGE_SIZE);
 
   return (
-    <main className="flex flex-col gap-6 px-4 pb-16 pt-24 sm:px-8">
+    <main className="flex flex-col gap-6 px-4 pb-16 pt-20 sm:pt-24 sm:px-8">
       <h1 className="text-2xl font-bold">Movies</h1>
       {first.items.length === 0 ? (
         <p className="text-muted">

@@ -36,7 +36,7 @@ export default function ResumeRow({ title, items }: ResumeRowProps) {
         </button>
         <div
           ref={scrollerRef}
-          className="no-scrollbar flex gap-2 overflow-x-auto scroll-smooth px-4 sm:px-8"
+          className="no-scrollbar flex gap-2 overflow-x-auto scroll-smooth px-4 py-4 sm:px-8"
         >
           {items.map((item) => (
             <ResumeCard key={item.playableId} item={item} />

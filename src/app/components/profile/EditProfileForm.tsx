@@ -14,7 +14,7 @@ export default function EditProfileForm({ profile }: Readonly<{ profile: Profile
   return (
     <form
       action={action}
-      className="flex min-w-0 flex-1 flex-wrap items-center gap-2"
+      className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center"
     >
       <input type="hidden" name="profileId" value={profile.id} />
       <input
@@ -22,7 +22,7 @@ export default function EditProfileForm({ profile }: Readonly<{ profile: Profile
         required
         maxLength={40}
         defaultValue={profile.name}
-        className="min-w-0 flex-1 rounded bg-black/40 px-3 py-2 text-sm outline-none ring-1 ring-white/15 focus:ring-white/40"
+        className="w-full min-w-0 rounded bg-black/40 px-3 py-2 text-sm outline-none ring-1 ring-white/15 focus:ring-white/40 sm:w-auto sm:flex-1"
       />
       <button
         type="submit"

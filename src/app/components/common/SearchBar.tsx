@@ -5,10 +5,21 @@ import { useEffect, useState } from "react";
 
 const DEBOUNCE_MS = 200;
 
-export default function SearchBar() {
+interface SearchBarProps {
+  /** "bar" = compact navbar pill (default); "page" = full-width field for /search. */
+  variant?: "bar" | "page";
+  autoFocus?: boolean;
+  initialQuery?: string;
+}
+
+export default function SearchBar({
+  variant = "bar",
+  autoFocus = false,
+  initialQuery = "",
+}: Readonly<SearchBarProps> = {}) {
   const router = useRouter();
   const pathname = usePathname();
-  const [value, setValue] = useState("");
+  const [value, setValue] = useState(initialQuery);
 
   // Debounce: 200ms after typing stops, show the filtered grid page.
   useEffect(() => {
@@ -31,9 +42,15 @@ export default function SearchBar() {
     if (q) router.push(`/search?q=${encodeURIComponent(q)}`);
   }
 
+  const page = variant === "page";
+
   return (
-    <form onSubmit={onSubmit} className="ml-auto">
-      <label className="flex items-center gap-2 rounded-full bg-black/50 px-3 py-1.5 ring-1 ring-white/20 focus-within:ring-white/50">
+    <form onSubmit={onSubmit} className={page ? "w-full" : undefined}>
+      <label
+        className={`flex items-center gap-2 rounded-full bg-black/50 px-3 py-2 ring-1 ring-white/20 focus-within:ring-white/50${
+          page ? " w-full" : ""
+        }`}
+      >
         <span aria-hidden className="text-muted">
           🔍
         </span>
@@ -41,9 +58,14 @@ export default function SearchBar() {
           type="search"
           value={value}
           onChange={(e) => setValue(e.target.value)}
+          autoFocus={autoFocus}
           placeholder="Title, actor, or genre…"
           aria-label="Search by title, actor, or genre"
-          className="w-32 bg-transparent text-sm text-foreground outline-none placeholder:text-muted focus:w-44 sm:w-44 sm:focus:w-64"
+          className={
+            page
+              ? "w-full bg-transparent text-base text-foreground outline-none placeholder:text-muted"
+              : "w-32 bg-transparent text-sm text-foreground outline-none placeholder:text-muted sm:w-44 sm:focus:w-64"
+          }
         />
       </label>
     </form>

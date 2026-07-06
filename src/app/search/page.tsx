@@ -1,4 +1,5 @@
 import InfiniteGrid from "@/app/components/common/InfiniteGrid";
+import SearchBar from "@/app/components/common/SearchBar";
 import { searchLibraryPage, PAGE_SIZE } from "@/db/queries";
 
 export const dynamic = "force-dynamic";
@@ -15,7 +16,13 @@ export default async function SearchPage({
     : { items: [], nextCursor: null };
 
   return (
-    <main className="flex flex-col gap-6 px-4 pb-16 pt-24 sm:px-8">
+    <main className="flex flex-col gap-6 px-4 pb-16 pt-20 sm:pt-24 sm:px-8">
+      {/* On phones the navbar search lives in the hamburger, so the field is
+          here at the top of the page and auto-focuses. Desktop uses the navbar. */}
+      <div className="sm:hidden">
+        <SearchBar variant="page" autoFocus initialQuery={query} />
+      </div>
+
       <h1 className="text-2xl font-bold">
         {query ? (
           <>

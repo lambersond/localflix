@@ -50,7 +50,7 @@ export default function MediaRow({ title, items, seeAllHref }: Readonly<MediaRow
         </button>
         <div
           ref={scrollerRef}
-          className="no-scrollbar flex gap-2 overflow-x-auto scroll-smooth px-4 sm:px-8"
+          className="no-scrollbar flex gap-2 overflow-x-auto scroll-smooth px-4 py-4 sm:px-8"
         >
           {items.map((item) => (
             <MediaCard key={`${item.mediaType}-${item.id}`} item={item} />

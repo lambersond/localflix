@@ -22,7 +22,7 @@ export default function MediaCard({ item }: Readonly<{ item: CardItem }>) {
       data-id={item.id}
       data-poster={poster ?? ""}
       style={{ width: CARD_W }}
-      className="group relative block shrink-0 overflow-hidden rounded-md bg-surface transition hover:ring-2 hover:ring-white/30"
+      className="group relative block shrink-0 overflow-hidden rounded-md bg-surface transition duration-200 hover:z-10 hover:scale-[1.05] hover:shadow-xl hover:shadow-black/60"
     >
       <div className="relative aspect-[2/3] w-full">
         {poster ? (

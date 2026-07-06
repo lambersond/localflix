@@ -11,7 +11,7 @@ export default function ProfilesPage() {
   const profiles = listProfiles();
 
   return (
-    <main className="mx-auto flex w-full max-w-3xl flex-col gap-8 px-4 pb-16 pt-24 sm:px-8">
+    <main className="mx-auto flex w-full max-w-3xl flex-col gap-8 px-4 pb-16 pt-20 sm:pt-24 sm:px-8">
       <h1 className="text-2xl font-bold">Manage profiles</h1>
 
       <div className="flex flex-col gap-4">

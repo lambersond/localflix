@@ -805,6 +805,176 @@ export function getContinueWatching(profileId: number): ResumeCardItem[] {
 }
 
 // ---------------------------------------------------------------------------
+// Detail-page play state (Play / Continue / Restart)
+// ---------------------------------------------------------------------------
+
+export type PlayStateKind = "none" | "in_progress" | "completed";
+
+export interface MoviePlayState {
+  state: PlayStateKind;
+  fraction: number;
+  remainingMinutes: number | null;
+}
+
+/** Derive a movie's detail-page play state from its progress row + runtime. */
+export function moviePlayState(
+  progress: WatchProgress | null,
+  runtimeMinutes: number | null,
+): MoviePlayState {
+  const position = progress?.positionSeconds ?? 0;
+  const duration = progress?.durationSeconds ?? (runtimeMinutes ? runtimeMinutes * 60 : null);
+  const fraction = duration && duration > 0 ? Math.min(Math.max(position / duration, 0), 1) : 0;
+  const remainingMinutes =
+    duration && duration > 0 ? Math.max(0, Math.round((duration - position) / 60)) : null;
+  if (progress?.completed) return { state: "completed", fraction, remainingMinutes };
+  if (position >= CONTINUE_THRESHOLD_SECONDS) return { state: "in_progress", fraction, remainingMinutes };
+  return { state: "none", fraction: 0, remainingMinutes };
+}
+
+export interface ShowResume {
+  totalEpisodes: number;
+  watchedCount: number;
+  started: boolean;
+  allWatched: boolean;
+  /** Episode to Continue into (in-progress, else next unwatched); null when all watched. */
+  resumePlayableId: string | null;
+  resumeLabel: string | null;
+  /** First episode overall — for Play / Restart. */
+  firstPlayableId: string | null;
+  /** Per-episode progress for the episode list. */
+  episodeProgress: Map<number, { fraction: number; completed: boolean }>;
+}
+
+/** Show-level progress summary + the episode to resume, from one profile's rows. */
+export function getShowResume(profileId: number, showId: number): ShowResume {
+  const eps = db
+    .select({
+      id: episodes.id,
+      seasonNum: seasons.tmdbSeasonNumber,
+      epNum: episodes.tmdbEpisodeNumber,
+    })
+    .from(episodes)
+    .innerJoin(seasons, eq(episodes.seasonId, seasons.id))
+    .where(eq(seasons.showId, showId))
+    .orderBy(asc(seasons.tmdbSeasonNumber), asc(episodes.tmdbEpisodeNumber))
+    .all();
+
+  const rows = db
+    .select({
+      playableId: watchProgress.playableId,
+      positionSeconds: watchProgress.positionSeconds,
+      durationSeconds: watchProgress.durationSeconds,
+      completed: watchProgress.completed,
+      updatedAt: watchProgress.updatedAt,
+    })
+    .from(watchProgress)
+    .innerJoin(episodes, eq(watchProgress.playableId, episodes.id))
+    .innerJoin(seasons, eq(episodes.seasonId, seasons.id))
+    .where(
+      and(
+        eq(watchProgress.profileId, profileId),
+        eq(watchProgress.playableKind, "episode"),
+        eq(seasons.showId, showId),
+      ),
+    )
+    .all();
+
+  const byId = new Map(rows.map((r) => [r.playableId, r]));
+  const episodeProgress = new Map<number, { fraction: number; completed: boolean }>();
+  let watchedCount = 0;
+  for (const r of rows) {
+    const fraction =
+      r.durationSeconds && r.durationSeconds > 0
+        ? Math.min(Math.max(r.positionSeconds / r.durationSeconds, 0), 1)
+        : 0;
+    const completed = !!r.completed;
+    if (completed) watchedCount += 1;
+    episodeProgress.set(r.playableId, { fraction, completed });
+  }
+
+  // Resume target: latest-updated in-progress episode, else first not-completed.
+  let resumeEp: { id: number; seasonNum: number; epNum: number } | null = null;
+  let latestUpdated = "";
+  for (const e of eps) {
+    const r = byId.get(e.id);
+    if (r && !r.completed && r.positionSeconds >= CONTINUE_THRESHOLD_SECONDS) {
+      const u = r.updatedAt ?? "";
+      if (!resumeEp || u > latestUpdated) {
+        resumeEp = e;
+        latestUpdated = u;
+      }
+    }
+  }
+  if (!resumeEp) resumeEp = eps.find((e) => !byId.get(e.id)?.completed) ?? null;
+
+  const totalEpisodes = eps.length;
+  return {
+    totalEpisodes,
+    watchedCount,
+    started: rows.some((r) => r.completed || r.positionSeconds >= CONTINUE_THRESHOLD_SECONDS),
+    allWatched: totalEpisodes > 0 && watchedCount >= totalEpisodes,
+    resumePlayableId: resumeEp ? toPlayableId("episode", resumeEp.id) : null,
+    resumeLabel: resumeEp ? `S${resumeEp.seasonNum}:E${resumeEp.epNum}` : null,
+    firstPlayableId: eps.length ? toPlayableId("episode", eps[0].id) : null,
+    episodeProgress,
+  };
+}
+
+/** Everything this profile has finished: completed movies + fully-watched shows. */
+export function getWatchedItems(profileId: number): CardItem[] {
+  const movieRows = db
+    .select({ id: watchProgress.playableId, updatedAt: watchProgress.updatedAt })
+    .from(watchProgress)
+    .where(
+      and(
+        eq(watchProgress.profileId, profileId),
+        eq(watchProgress.playableKind, "movie"),
+        eq(watchProgress.completed, 1),
+      ),
+    )
+    .all();
+
+  const totals = db
+    .select({ showId: seasons.showId, total: sql<number>`count(*)` })
+    .from(episodes)
+    .innerJoin(seasons, eq(episodes.seasonId, seasons.id))
+    .groupBy(seasons.showId)
+    .all();
+  const totalByShow = new Map(totals.map((t) => [t.showId, t.total]));
+
+  const completedByShow = db
+    .select({
+      showId: seasons.showId,
+      done: sql<number>`count(*)`,
+      lastUpdated: sql<string>`max(${watchProgress.updatedAt})`,
+    })
+    .from(watchProgress)
+    .innerJoin(episodes, eq(watchProgress.playableId, episodes.id))
+    .innerJoin(seasons, eq(episodes.seasonId, seasons.id))
+    .where(
+      and(
+        eq(watchProgress.profileId, profileId),
+        eq(watchProgress.playableKind, "episode"),
+        eq(watchProgress.completed, 1),
+      ),
+    )
+    .groupBy(seasons.showId)
+    .all();
+
+  const merged: { mediaType: "movie" | "show"; mediaId: number; updatedAt: string }[] = [
+    ...movieRows.map((m) => ({ mediaType: "movie" as const, mediaId: m.id, updatedAt: m.updatedAt ?? "" })),
+    ...completedByShow
+      .filter((c) => {
+        const total = totalByShow.get(c.showId) ?? 0;
+        return total > 0 && c.done >= total;
+      })
+      .map((c) => ({ mediaType: "show" as const, mediaId: c.showId, updatedAt: c.lastUpdated ?? "" })),
+  ];
+  merged.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return cardsForItems(merged.map(({ mediaType, mediaId }) => ({ mediaType, mediaId })));
+}
+
+// ---------------------------------------------------------------------------
 // Up Next: next unwatched episode in a series + next unwatched sequel
 // ---------------------------------------------------------------------------
 

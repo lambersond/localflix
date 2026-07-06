@@ -3,6 +3,7 @@ import Link from "next/link";
 import type { Profile } from "@/db/schema";
 
 import ProfileSwitcher from "../profile/ProfileSwitcher";
+import MobileMenu from "./MobileMenu";
 import SearchBar from "./SearchBar";
 
 const links = [
@@ -20,14 +21,14 @@ interface NavbarProps {
 export default function Navbar({ activeProfile, profiles }: Readonly<NavbarProps>) {
   return (
     <header className="fixed inset-x-0 top-0 z-40 bg-gradient-to-b from-black/90 to-transparent">
-      <nav className="mx-auto flex max-w-[1800px] items-center gap-8 px-4 py-4 sm:px-8">
+      <nav className="mx-auto flex max-w-[1800px] items-center gap-3 px-4 py-3 sm:gap-8 sm:px-8 sm:py-4">
         <Link
           href="/"
-          className="text-2xl font-extrabold tracking-tight text-accent"
+          className="text-xl font-extrabold tracking-tight text-foreground sm:text-2xl"
         >
-          MEDIA<span className="text-foreground">HOST</span>
+          Local<span className="text-accent">Flix</span>
         </Link>
-        <div className="flex items-center gap-5 text-sm text-muted">
+        <div className="hidden items-center gap-5 text-sm text-muted sm:flex">
           {links.map((link) => (
             <Link
               key={link.href}
@@ -38,8 +39,16 @@ export default function Navbar({ activeProfile, profiles }: Readonly<NavbarProps
             </Link>
           ))}
         </div>
-        <SearchBar />
-        <ProfileSwitcher activeProfile={activeProfile} profiles={profiles} />
+        <div className="ml-auto flex items-center gap-2 sm:gap-3">
+          {/* Inline on desktop; on mobile these live inside the hamburger menu. */}
+          <div className="hidden sm:block">
+            <SearchBar />
+          </div>
+          <div className="hidden sm:block">
+            <ProfileSwitcher activeProfile={activeProfile} profiles={profiles} />
+          </div>
+          <MobileMenu links={links} activeProfile={activeProfile} profiles={profiles} />
+        </div>
       </nav>
     </header>
   );

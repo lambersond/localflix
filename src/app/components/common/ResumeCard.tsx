@@ -5,6 +5,7 @@ import type { ResumeCardItem } from "@/db/queries";
 import { tmdbImage } from "@/lib/tmdb";
 
 import WatchedToggle from "../profile/WatchedToggle";
+import ProgressBar from "./ProgressBar";
 
 export default function ResumeCard({ item }: { item: ResumeCardItem }) {
   const img = tmdbImage(item.imagePath);
@@ -12,7 +13,7 @@ export default function ResumeCard({ item }: { item: ResumeCardItem }) {
   return (
     <Link
       href={`/watch/${item.playableId}`}
-      className="group relative block w-[240px] shrink-0 overflow-hidden rounded-md bg-surface transition duration-200 hover:ring-2 hover:ring-white/30"
+      className="group relative block w-[240px] shrink-0 overflow-hidden rounded-md bg-surface transition duration-200 hover:z-10 hover:scale-[1.05] hover:shadow-xl hover:shadow-black/60"
     >
       <div className="relative aspect-video w-full">
         {img ? (
@@ -30,17 +31,18 @@ export default function ResumeCard({ item }: { item: ResumeCardItem }) {
         </div>
 
         <div className="absolute right-2 top-2 opacity-0 transition group-hover:opacity-100">
-          <WatchedToggle playableId={item.playableId} initialCompleted={false} variant="compact" />
+          <WatchedToggle
+            playableId={item.playableId}
+            initialCompleted={false}
+            variant="compact"
+            tooltipSide="bottom"
+          />
         </div>
 
-        {item.progressFraction > 0 ? (
-          <div className="absolute inset-x-0 bottom-0 h-1 bg-white/30">
-            <div
-              className="h-full bg-accent"
-              style={{ width: `${Math.round(item.progressFraction * 100)}%` }}
-            />
-          </div>
-        ) : null}
+        <ProgressBar
+          fraction={item.progressFraction}
+          className="absolute inset-x-0 bottom-0"
+        />
       </div>
 
       <div className="p-2">

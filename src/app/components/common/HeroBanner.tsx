@@ -27,7 +27,11 @@ export default function HeroBanner({ hero }: { hero: HeroData }) {
       <div className="absolute inset-0 bg-gradient-to-r from-black/80 via-black/40 to-transparent" />
       <div className="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-background to-transparent" />
 
-      <div className="absolute inset-0 flex flex-col justify-end gap-4 px-4 pb-[8%] sm:px-8 md:max-w-2xl">
+      {/* Bottom padding must stay ahead of the rows' -mt overlap (48px mobile /
+          80px sm+) at every width, so use fixed steps rather than a width-based
+          percentage (which collapses on narrow/mid screens and lets the rows
+          bleed into the buttons). */}
+      <div className="absolute inset-0 flex flex-col justify-end gap-4 px-4 pb-20 sm:px-8 sm:pb-28 md:max-w-2xl lg:pb-32">
         <h1 className="text-3xl font-extrabold drop-shadow-lg sm:text-5xl">
           {hero.title}
         </h1>

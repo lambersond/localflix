@@ -9,12 +9,15 @@ interface WatchedToggleProps {
   initialCompleted: boolean;
   /** "button" = full pill (detail pages); "compact" = small icon (cards/rows). */
   variant?: "button" | "compact";
+  /** Which side the compact tooltip opens toward (default "top"). */
+  tooltipSide?: "top" | "bottom";
 }
 
 export default function WatchedToggle({
   playableId,
   initialCompleted,
   variant = "button",
+  tooltipSide = "top",
 }: Readonly<WatchedToggleProps>) {
   const [completed, setCompleted] = useState(initialCompleted);
   const [pending, startTransition] = useTransition();
@@ -50,7 +53,11 @@ export default function WatchedToggle({
         </button>
         <span
           role="tooltip"
-          className="pointer-events-none absolute bottom-full left-1/2 mb-1 -translate-x-1/2 whitespace-nowrap rounded bg-black/90 px-2 py-1 text-xs text-white opacity-0 transition group-hover/watched:opacity-100"
+          className={`pointer-events-none absolute whitespace-nowrap rounded bg-black/90 px-2 py-1 text-xs text-white opacity-0 transition group-hover/watched:opacity-100 ${
+            tooltipSide === "bottom"
+              ? "right-0 top-full mt-1" // opens down-left, into the card (toggle is top-right)
+              : "bottom-full left-1/2 mb-1 -translate-x-1/2"
+          }`}
         >
           {label}
         </span>

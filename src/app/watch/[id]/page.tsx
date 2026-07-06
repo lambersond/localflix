@@ -7,10 +7,13 @@ import { getActiveProfileId } from "@/lib/profile";
 
 export default async function WatchPage({
   params,
+  searchParams,
 }: Readonly<{
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ restart?: string }>;
 }>) {
   const { id } = await params;
+  const { restart } = await searchParams;
 
   const parsed = parsePlayableId(id);
   if (!parsed) notFound();
@@ -20,7 +23,9 @@ export default async function WatchPage({
 
   const profileId = await getActiveProfileId();
   const progress = profileId ? getWatchProgress(profileId, parsed) : null;
-  const resumeSeconds = progress && !progress.completed ? progress.positionSeconds : 0;
+  // "Restart" (?restart=1) starts from the top regardless of saved progress.
+  const resumeSeconds =
+    restart || !progress || progress.completed ? 0 : progress.positionSeconds;
 
   return (
     <VideoPlayer

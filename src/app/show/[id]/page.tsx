@@ -3,9 +3,10 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import CastRow from "@/app/components/common/CastRow";
+import ProgressBar from "@/app/components/common/ProgressBar";
 import WatchedToggle from "@/app/components/profile/WatchedToggle";
 import WatchlistButton from "@/app/components/profile/WatchlistButton";
-import { getCompletedEpisodeIds, getShowDetail, isInWatchlist } from "@/db/queries";
+import { getShowDetail, getShowResume, isInWatchlist } from "@/db/queries";
 import { formatRuntime, releaseYear, toPlayableId } from "@/lib/media";
 import { getActiveProfileId } from "@/lib/profile";
 import { tmdbImage } from "@/lib/tmdb";
@@ -26,9 +27,20 @@ export default async function ShowPage({
 
   const profileId = await getActiveProfileId();
   const inList = profileId ? isInWatchlist(profileId, "show", show.id) : false;
-  const completedEpisodes = profileId
-    ? getCompletedEpisodeIds(profileId, show.id)
-    : new Set<number>();
+  const resume = getShowResume(profileId ?? 0, show.id);
+  const showState = resume.allWatched ? "watched" : resume.started ? "started" : "none";
+
+  let episodesSummary: string | null = null;
+  if (resume.totalEpisodes > 0) {
+    if (resume.allWatched) {
+      episodesSummary = `Watched · ${resume.watchedCount}/${resume.totalEpisodes} episodes`;
+    } else if (resume.started) {
+      const upNext = resume.resumeLabel ? `Up next: ${resume.resumeLabel} · ` : "";
+      episodesSummary = `${upNext}${resume.watchedCount}/${resume.totalEpisodes} episodes`;
+    } else {
+      episodesSummary = `${resume.totalEpisodes} episodes`;
+    }
+  }
 
   const backdrop = tmdbImage(show.backdropPath);
   const year = releaseYear(show.firstAirDate);
@@ -61,8 +73,45 @@ export default async function ShowPage({
           {show.overview ? (
             <p className="max-w-xl text-sm text-foreground/90">{show.overview}</p>
           ) : null}
-          <div>
-            <WatchlistButton mediaType="show" mediaId={show.id} initialInList={inList} />
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-3">
+              {resume.firstPlayableId ? (
+                showState === "watched" ? (
+                  <Link
+                    href={`/watch/${resume.firstPlayableId}?restart=1`}
+                    className="inline-flex items-center gap-2 rounded bg-foreground px-8 py-2.5 font-semibold text-background transition hover:bg-foreground/80"
+                  >
+                    <span aria-hidden>↻</span> Restart
+                  </Link>
+                ) : showState === "started" ? (
+                  <>
+                    <Link
+                      href={`/watch/${resume.resumePlayableId ?? resume.firstPlayableId}`}
+                      className="inline-flex items-center gap-2 rounded bg-foreground px-8 py-2.5 font-semibold text-background transition hover:bg-foreground/80"
+                    >
+                      <span aria-hidden>▶</span> Continue
+                    </Link>
+                    <Link
+                      href={`/watch/${resume.firstPlayableId}?restart=1`}
+                      className="inline-flex items-center gap-2 rounded bg-white/20 px-6 py-2.5 font-semibold text-foreground backdrop-blur transition hover:bg-white/30"
+                    >
+                      <span aria-hidden>↻</span> Restart
+                    </Link>
+                  </>
+                ) : (
+                  <Link
+                    href={`/watch/${resume.firstPlayableId}`}
+                    className="inline-flex items-center gap-2 rounded bg-foreground px-8 py-2.5 font-semibold text-background transition hover:bg-foreground/80"
+                  >
+                    <span aria-hidden>▶</span> Play
+                  </Link>
+                )
+              ) : null}
+              <WatchlistButton mediaType="show" mediaId={show.id} initialInList={inList} />
+            </div>
+            {episodesSummary ? (
+              <p className="text-sm text-muted">{episodesSummary}</p>
+            ) : null}
           </div>
         </div>
       </div>
@@ -81,6 +130,7 @@ export default async function ShowPage({
                 {season.episodes.map((ep) => {
                   const still = tmdbImage(ep.stillPath);
                   const runtime = formatRuntime(ep.runtimeMinutes);
+                  const epProg = resume.episodeProgress.get(ep.id);
                   return (
                     <li key={ep.id}>
                       <Link
@@ -103,6 +153,12 @@ export default async function ShowPage({
                           <span className="absolute inset-0 flex items-center justify-center text-2xl opacity-0 transition hover:opacity-100">
                             ▶
                           </span>
+                          {epProg && !epProg.completed ? (
+                            <ProgressBar
+                              fraction={epProg.fraction}
+                              className="absolute inset-x-0 bottom-0"
+                            />
+                          ) : null}
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-baseline justify-between gap-2">
@@ -120,7 +176,7 @@ export default async function ShowPage({
                         <div className="shrink-0">
                           <WatchedToggle
                             playableId={toPlayableId("episode", ep.id)}
-                            initialCompleted={completedEpisodes.has(ep.id)}
+                            initialCompleted={epProg?.completed ?? false}
                             variant="compact"
                           />
                         </div>
