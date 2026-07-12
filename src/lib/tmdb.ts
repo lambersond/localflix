@@ -21,6 +21,20 @@ export interface TmdbCollectionRef {
   backdrop_path: string | null;
 }
 
+export interface TmdbKeyword {
+  id: number;
+  name: string;
+}
+
+export interface TmdbVideo {
+  key: string;
+  name: string;
+  site: string;
+  type: string;
+  official?: boolean;
+  published_at?: string;
+}
+
 export interface TmdbMovieDetails {
   id: number;
   title: string;
@@ -29,8 +43,12 @@ export interface TmdbMovieDetails {
   backdrop_path: string | null;
   release_date: string | null;
   runtime: number | null;
+  vote_average: number | null;
+  vote_count: number | null;
   belongs_to_collection: TmdbCollectionRef | null;
   genres: TmdbGenre[];
+  videos?: { results: TmdbVideo[] };
+  keywords?: { keywords: TmdbKeyword[] };
 }
 
 export interface TmdbShowDetails {
@@ -40,7 +58,12 @@ export interface TmdbShowDetails {
   poster_path: string | null;
   backdrop_path: string | null;
   first_air_date: string | null;
+  vote_average: number | null;
+  vote_count: number | null;
   genres: TmdbGenre[];
+  videos?: { results: TmdbVideo[] };
+  // TMDB returns appended TV keywords under `results`, not `keywords`.
+  keywords?: { results: TmdbKeyword[] };
 }
 
 export interface TmdbEpisode {
@@ -122,11 +145,52 @@ export async function searchTv(query: string): Promise<number | null> {
 }
 
 export function getMovieDetails(tmdbId: number): Promise<TmdbMovieDetails> {
-  return tmdbFetch<TmdbMovieDetails>(`/movie/${tmdbId}`);
+  return tmdbFetch<TmdbMovieDetails>(
+    `/movie/${tmdbId}?append_to_response=videos,keywords`,
+  );
 }
 
 export function getShowDetails(tmdbId: number): Promise<TmdbShowDetails> {
-  return tmdbFetch<TmdbShowDetails>(`/tv/${tmdbId}`);
+  return tmdbFetch<TmdbShowDetails>(`/tv/${tmdbId}?append_to_response=videos,keywords`);
+}
+
+/** Most interesting video types first; anything unrecognized sorts last. */
+const VIDEO_TYPE_ORDER = [
+  "Trailer",
+  "Teaser",
+  "Clip",
+  "Featurette",
+  "Behind the Scenes",
+  "Bloopers",
+];
+
+function typeRank(type: string): number {
+  const i = VIDEO_TYPE_ORDER.indexOf(type);
+  return i === -1 ? VIDEO_TYPE_ORDER.length : i;
+}
+
+/**
+ * A title's YouTube videos in display order: trailers first, then teasers, clips
+ * and other extras; official before unofficial, newest before oldest. We only
+ * ever keep the YouTube key — never the video itself.
+ */
+export function videosOf(details: TmdbMovieDetails | TmdbShowDetails): TmdbVideo[] {
+  return (details.videos?.results ?? [])
+    .filter((v) => v.site === "YouTube" && v.key)
+    .sort((a, b) => {
+      const byType = typeRank(a.type) - typeRank(b.type);
+      if (byType !== 0) return byType;
+      const byOfficial = Number(b.official ?? false) - Number(a.official ?? false);
+      if (byOfficial !== 0) return byOfficial;
+      return (b.published_at ?? "").localeCompare(a.published_at ?? "");
+    });
+}
+
+/** Appended keywords, normalizing TMDB's movie (`keywords`) vs TV (`results`) shape. */
+export function keywordsOf(details: TmdbMovieDetails | TmdbShowDetails): TmdbKeyword[] {
+  const block = details.keywords;
+  if (!block) return [];
+  return "keywords" in block ? block.keywords : block.results;
 }
 
 export function getSeasonDetails(

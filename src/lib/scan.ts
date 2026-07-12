@@ -2,7 +2,7 @@ import { statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 
 import * as schema from "../db/schema";
@@ -24,9 +24,13 @@ import {
   getShowCast,
   getShowCertification,
   getShowDetails,
+  keywordsOf,
   searchMovie,
   searchTv,
+  videosOf,
+  type TmdbVideo,
 } from "./tmdb";
+import { filterAvailableVideos } from "./youtube";
 
 export type DB = BetterSQLite3Database<typeof schema>;
 export type Logger = (line: string) => void;
@@ -40,8 +44,12 @@ export interface MovieData {
   releaseDate: string | null;
   runtimeMinutes: number | null;
   certification: string | null;
+  voteAverage: number | null;
+  voteCount: number | null;
   tmdbCollectionId: number | null;
   genres: { id: number; name: string }[];
+  keywords: { id: number; name: string }[];
+  videos: TmdbVideo[];
   filePath: string;
 }
 
@@ -99,6 +107,47 @@ export function createScanner(db: DB, log: Logger) {
     }
   }
 
+  function upsertKeywords(list: { id: number; name: string }[]) {
+    for (const k of list) {
+      db.insert(schema.keywords)
+        .values({ id: k.id, name: k.name })
+        .onConflictDoUpdate({ target: schema.keywords.id, set: { name: k.name } })
+        .run();
+    }
+  }
+
+  /** Videos are owned by one title, so just swap the whole set on each scan. */
+  function replaceVideos(
+    mediaType: "movie" | "show",
+    mediaId: number,
+    list: TmdbVideo[],
+  ) {
+    db.delete(schema.videos)
+      .where(
+        and(
+          eq(schema.videos.mediaType, mediaType),
+          eq(schema.videos.mediaId, mediaId),
+        ),
+      )
+      .run();
+
+    list.forEach((v, index) => {
+      db.insert(schema.videos)
+        .values({
+          mediaType,
+          mediaId,
+          youtubeKey: v.key,
+          name: v.name,
+          type: v.type,
+          official: v.official ? 1 : 0,
+          publishedAt: v.published_at ?? null,
+          position: index,
+        })
+        .onConflictDoNothing()
+        .run();
+    });
+  }
+
   function upsertPerson(c: { id: number; name: string; profile_path: string | null }) {
     db.insert(schema.people)
       .values({ id: c.id, name: c.name, profilePath: c.profile_path })
@@ -123,6 +172,8 @@ export function createScanner(db: DB, log: Logger) {
         releaseDate: data.releaseDate,
         runtimeMinutes: data.runtimeMinutes,
         certification: data.certification,
+        voteAverage: data.voteAverage,
+        voteCount: data.voteCount,
         tmdbCollectionId: data.tmdbCollectionId,
         filePath: absPath,
         fileSize,
@@ -138,6 +189,8 @@ export function createScanner(db: DB, log: Logger) {
           releaseDate: data.releaseDate,
           runtimeMinutes: data.runtimeMinutes,
           certification: data.certification,
+          voteAverage: data.voteAverage,
+          voteCount: data.voteCount,
           tmdbCollectionId: data.tmdbCollectionId,
           filePath: absPath,
           fileSize,
@@ -155,6 +208,17 @@ export function createScanner(db: DB, log: Logger) {
         .onConflictDoNothing()
         .run();
     }
+
+    upsertKeywords(data.keywords);
+    db.delete(schema.movieKeywords).where(eq(schema.movieKeywords.movieId, row.id)).run();
+    for (const k of data.keywords) {
+      db.insert(schema.movieKeywords)
+        .values({ movieId: row.id, keywordId: k.id })
+        .onConflictDoNothing()
+        .run();
+    }
+
+    replaceVideos("movie", row.id, data.videos);
     return row.id;
   }
 
@@ -206,6 +270,8 @@ export function createScanner(db: DB, log: Logger) {
         backdropPath: show.backdrop_path,
         firstAirDate: show.first_air_date,
         certification,
+        voteAverage: show.vote_average,
+        voteCount: show.vote_count,
       })
       .onConflictDoUpdate({
         target: schema.shows.tmdbId,
@@ -216,6 +282,8 @@ export function createScanner(db: DB, log: Logger) {
           backdropPath: show.backdrop_path,
           firstAirDate: show.first_air_date,
           certification,
+          voteAverage: show.vote_average,
+          voteCount: show.vote_count,
         },
       })
       .returning({ id: schema.shows.id })
@@ -229,6 +297,18 @@ export function createScanner(db: DB, log: Logger) {
         .onConflictDoNothing()
         .run();
     }
+
+    const showKeywordList = keywordsOf(show);
+    upsertKeywords(showKeywordList);
+    db.delete(schema.showKeywords).where(eq(schema.showKeywords.showId, showRow.id)).run();
+    for (const k of showKeywordList) {
+      db.insert(schema.showKeywords)
+        .values({ showId: showRow.id, keywordId: k.id })
+        .onConflictDoNothing()
+        .run();
+    }
+
+    replaceVideos("show", showRow.id, await filterAvailableVideos(videosOf(show), log));
 
     await ingestShowCast(showRow.id, tmdbId);
 
@@ -399,8 +479,12 @@ export function createScanner(db: DB, log: Logger) {
         releaseDate: d.release_date,
         runtimeMinutes: d.runtime,
         certification: await getMovieCertification(d.id),
+        voteAverage: d.vote_average,
+        voteCount: d.vote_count,
         tmdbCollectionId: d.belongs_to_collection?.id ?? null,
         genres: d.genres,
+        keywords: keywordsOf(d),
+        videos: await filterAvailableVideos(videosOf(d), log),
         filePath: file,
       });
       await ingestMovieCast(id, d.id);

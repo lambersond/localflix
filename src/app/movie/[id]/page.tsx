@@ -3,10 +3,20 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import CastRow from "@/app/components/common/CastRow";
+import KeywordChips from "@/app/components/common/KeywordChips";
+import MediaRow from "@/app/components/common/MediaRow";
 import ProgressBar from "@/app/components/common/ProgressBar";
+import Rating from "@/app/components/common/Rating";
+import VideoGallery from "@/app/components/common/VideoGallery";
 import WatchedToggle from "@/app/components/profile/WatchedToggle";
 import WatchlistButton from "@/app/components/profile/WatchlistButton";
-import { getMovieDetail, getWatchProgress, isInWatchlist, moviePlayState } from "@/db/queries";
+import {
+  getMovieDetail,
+  getRelated,
+  getWatchProgress,
+  isInWatchlist,
+  moviePlayState,
+} from "@/db/queries";
 import { formatRuntime, releaseYear, toPlayableId } from "@/lib/media";
 import { getActiveProfileId } from "@/lib/profile";
 import { tmdbImage } from "@/lib/tmdb";
@@ -32,6 +42,7 @@ export default async function MoviePage({
     : null;
   const completed = !!progress?.completed;
   const play = moviePlayState(progress, movie.runtimeMinutes);
+  const related = getRelated("movie", movie.id);
 
   const backdrop = tmdbImage(movie.backdropPath);
   const poster = tmdbImage(movie.posterPath);
@@ -70,6 +81,7 @@ export default async function MoviePage({
                 {movie.certification}
               </span>
             ) : null}
+            <Rating voteAverage={movie.voteAverage} voteCount={movie.voteCount} />
             {runtime ? <span>{runtime}</span> : null}
             {movie.genres.map((g) => (
               <span key={g.id} className="rounded-full bg-surface px-3 py-1">
@@ -130,8 +142,16 @@ export default async function MoviePage({
         </div>
       </div>
 
-      <div className="px-4 pb-16 sm:px-8">
+      <div className="flex flex-col gap-8 px-4 sm:px-8">
+        <VideoGallery videos={movie.videos} title={movie.title} />
         <CastRow cast={movie.cast} />
+        <KeywordChips keywords={movie.keywords} />
+      </div>
+
+      {/* MediaRow brings its own px-4/sm:px-8 gutter, so it sits outside the
+          padded block rather than nesting inside it. */}
+      <div className="pb-16 pt-8">
+        <MediaRow title="More Like This" items={related} />
       </div>
     </main>
   );

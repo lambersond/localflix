@@ -10,8 +10,11 @@ import { createScanner, type MovieData } from "../lib/scan";
 import {
   getMovieCertification,
   getMovieDetails,
+  keywordsOf,
   searchMovie,
+  videosOf,
 } from "../lib/tmdb";
+import { filterAvailableVideos } from "../lib/youtube";
 import * as schema from "../db/schema";
 import {
   collections as collectionsConfig,
@@ -61,8 +64,12 @@ async function ingestMovieEntry(entry: MovieEntry) {
     releaseDate: d.release_date,
     runtimeMinutes: d.runtime,
     certification: await getMovieCertification(d.id),
+    voteAverage: d.vote_average,
+    voteCount: d.vote_count,
     tmdbCollectionId: d.belongs_to_collection?.id ?? null,
     genres: d.genres,
+    keywords: keywordsOf(d),
+    videos: await filterAvailableVideos(videosOf(d), console.log),
     filePath: entry.filePath,
   });
   await scanner.ingestMovieCast(id, d.id);
@@ -86,8 +93,12 @@ async function seedSample() {
       releaseDate: d.release_date,
       runtimeMinutes: d.runtime,
       certification: await getMovieCertification(d.id),
+      voteAverage: d.vote_average,
+      voteCount: d.vote_count,
       tmdbCollectionId: d.belongs_to_collection?.id ?? null,
       genres: d.genres,
+      keywords: keywordsOf(d),
+      videos: await filterAvailableVideos(videosOf(d), console.log),
       filePath: samplePath,
     };
   } else {
@@ -102,12 +113,16 @@ async function seedSample() {
       releaseDate: "2008-05-20",
       runtimeMinutes: 10,
       certification: null,
+      voteAverage: null,
+      voteCount: null,
       tmdbCollectionId: null,
       genres: [
         { id: 16, name: "Animation" },
         { id: 10751, name: "Family" },
         { id: 35, name: "Comedy" },
       ],
+      keywords: [],
+      videos: [],
       filePath: samplePath,
     };
   }

@@ -22,6 +22,8 @@ export const movies = sqliteTable("movies", {
   releaseDate: text("release_date"),
   runtimeMinutes: integer("runtime_minutes"),
   certification: text("certification"),
+  voteAverage: real("vote_average"),
+  voteCount: integer("vote_count"),
   tmdbCollectionId: integer("tmdb_collection_id"),
   filePath: text("file_path").notNull(),
   fileSize: integer("file_size"),
@@ -41,8 +43,36 @@ export const shows = sqliteTable("shows", {
   backdropPath: text("backdrop_path"),
   firstAirDate: text("first_air_date"),
   certification: text("certification"),
+  voteAverage: real("vote_average"),
+  voteCount: integer("vote_count"),
   createdAt: text("created_at").default(sql`(CURRENT_TIMESTAMP)`),
 }, (t) => [index("shows_name_idx").on(t.name, t.id)]);
+
+/**
+ * Trailers, teasers, clips and other extras from TMDB. Only the YouTube id is
+ * kept — we link out and never store the video itself. Polymorphic over
+ * movies/shows like `collectionItems`/`watchlist`; integrity lives in app code.
+ */
+export const videos = sqliteTable(
+  "videos",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    mediaType: text("media_type", { enum: ["movie", "show"] }).notNull(),
+    mediaId: integer("media_id").notNull(),
+    youtubeKey: text("youtube_key").notNull(),
+    name: text("name").notNull(),
+    /** TMDB video type: Trailer | Teaser | Clip | Featurette | … */
+    type: text("type").notNull(),
+    official: integer("official").notNull().default(0),
+    publishedAt: text("published_at"),
+    /** Our computed display order: trailers first, then teasers, clips, … */
+    position: integer("position").notNull().default(0),
+  },
+  (t) => [
+    uniqueIndex("videos_unq").on(t.mediaType, t.mediaId, t.youtubeKey),
+    index("videos_media_idx").on(t.mediaType, t.mediaId),
+  ],
+);
 
 export const seasons = sqliteTable(
   "seasons",
@@ -113,6 +143,49 @@ export const showGenres = sqliteTable(
       .references(() => genres.id, { onDelete: "cascade" }),
   },
   (t) => [primaryKey({ columns: [t.showId, t.genreId] })],
+);
+
+/**
+ * Keywords — `id` is the TMDB keyword id. Far more specific than genres, so they
+ * drive both search and the "More Like This" row.
+ */
+export const keywords = sqliteTable("keywords", {
+  id: integer("id").primaryKey(),
+  name: text("name").notNull(),
+});
+
+export const movieKeywords = sqliteTable(
+  "movie_keywords",
+  {
+    movieId: integer("movie_id")
+      .notNull()
+      .references(() => movies.id, { onDelete: "cascade" }),
+    keywordId: integer("keyword_id")
+      .notNull()
+      .references(() => keywords.id, { onDelete: "cascade" }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.movieId, t.keywordId] }),
+    // Related-titles lookups go keyword -> media, which the PK's leading column
+    // doesn't cover.
+    index("movie_keywords_keyword_idx").on(t.keywordId),
+  ],
+);
+
+export const showKeywords = sqliteTable(
+  "show_keywords",
+  {
+    showId: integer("show_id")
+      .notNull()
+      .references(() => shows.id, { onDelete: "cascade" }),
+    keywordId: integer("keyword_id")
+      .notNull()
+      .references(() => keywords.id, { onDelete: "cascade" }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.showId, t.keywordId] }),
+    index("show_keywords_keyword_idx").on(t.keywordId),
+  ],
 );
 
 /**
@@ -256,6 +329,8 @@ export type Show = typeof shows.$inferSelect;
 export type Season = typeof seasons.$inferSelect;
 export type Episode = typeof episodes.$inferSelect;
 export type Genre = typeof genres.$inferSelect;
+export type Keyword = typeof keywords.$inferSelect;
+export type Video = typeof videos.$inferSelect;
 export type Person = typeof people.$inferSelect;
 export type Collection = typeof collections.$inferSelect;
 export type CollectionItem = typeof collectionItems.$inferSelect;

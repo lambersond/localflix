@@ -3,10 +3,14 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import CastRow from "@/app/components/common/CastRow";
+import KeywordChips from "@/app/components/common/KeywordChips";
+import MediaRow from "@/app/components/common/MediaRow";
 import ProgressBar from "@/app/components/common/ProgressBar";
+import Rating from "@/app/components/common/Rating";
+import VideoGallery from "@/app/components/common/VideoGallery";
 import WatchedToggle from "@/app/components/profile/WatchedToggle";
 import WatchlistButton from "@/app/components/profile/WatchlistButton";
-import { getShowDetail, getShowResume, isInWatchlist } from "@/db/queries";
+import { getRelated, getShowDetail, getShowResume, isInWatchlist } from "@/db/queries";
 import { formatRuntime, releaseYear, toPlayableId } from "@/lib/media";
 import { getActiveProfileId } from "@/lib/profile";
 import { tmdbImage } from "@/lib/tmdb";
@@ -44,6 +48,7 @@ export default async function ShowPage({
 
   const backdrop = tmdbImage(show.backdropPath);
   const year = releaseYear(show.firstAirDate);
+  const related = getRelated("show", show.id);
 
   return (
     <main className="flex flex-col">
@@ -64,6 +69,7 @@ export default async function ShowPage({
                 {show.certification}
               </span>
             ) : null}
+            <Rating voteAverage={show.voteAverage} voteCount={show.voteCount} />
             {show.genres.map((g) => (
               <span key={g.id} className="rounded-full bg-surface px-3 py-1">
                 {g.name}
@@ -117,7 +123,6 @@ export default async function ShowPage({
       </div>
 
       <div className="flex flex-col gap-8 px-4 py-10 sm:px-8">
-        <CastRow cast={show.cast} />
         {show.seasons.length === 0 ? (
           <p className="text-muted">No episodes available yet.</p>
         ) : (
@@ -188,6 +193,16 @@ export default async function ShowPage({
             </section>
           ))
         )}
+
+        <VideoGallery videos={show.videos} title={show.name} />
+        <CastRow cast={show.cast} />
+        <KeywordChips keywords={show.keywords} />
+      </div>
+
+      {/* MediaRow brings its own px-4/sm:px-8 gutter, so it sits outside the
+          padded body block rather than nesting inside it. */}
+      <div className="pb-16">
+        <MediaRow title="More Like This" items={related} />
       </div>
     </main>
   );

@@ -9,6 +9,7 @@ import type { CardPreview as CardPreviewData } from "@/db/queries";
 import { tmdbImage } from "@/lib/tmdb-image";
 
 import WatchlistButton from "../profile/WatchlistButton";
+import Rating from "./Rating";
 
 const CARD_W = 320; // expanded width
 const IMG_H = 180; // expanded image height (16:9 at CARD_W)
@@ -185,6 +186,7 @@ export default function CardPreview({
                   {data.certification}
                 </span>
               ) : null}
+              <Rating voteAverage={data.voteAverage} voteCount={data.voteCount} />
               {data.runtime ? <span>{data.runtime}</span> : null}
             </div>
 

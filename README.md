@@ -1,5 +1,3 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
-
 ## Getting Started
 
 First, run the development server:
@@ -74,20 +72,45 @@ ideal for a NAS. Cache on demand from the admin page or with `npm run scan` (use
 
 ## Self-hosting with Docker
 
-The image builds a standalone server and bundles system `ffmpeg`. Migrations run automatically on
-startup (`src/instrumentation.ts`).
+A prebuilt image is published on Docker Hub — no need to build it yourself:
+
+**[hub.docker.com/r/lambersond/personal-media-host](https://hub.docker.com/r/lambersond/personal-media-host)**
 
 ```bash
-docker build -t personal-media-host .
+docker pull lambersond/personal-media-host
 
 docker run -d --name media-host -p 3000:3000 \
   -e TMDB_API_TOKEN=... \
-  -v /nas/media:/media \                     # your library (symlinks are followed)
-  -v $(pwd)/data:/data \                      # sqlite db
-  -v /nas/artwork:/data/images \              # cached artwork (own disk; or omit to keep under /data)
+  -v /nas/media:/media \                       # your library (symlinks are followed)
+  -v $(pwd)/data:/data \                       # sqlite db
+  -v /nas/artwork:/data/images \               # cached artwork (own disk; or omit to keep under /data)
   -v $(pwd)/data/avatars:/app/public/avatars \ # persist uploaded profile avatars
-  personal-media-host
+  lambersond/personal-media-host
 ```
+
+The image bundles a standalone server and system `ffmpeg`. Migrations run automatically on startup
+(`src/instrumentation.ts`), so a fresh volume is set up on first boot.
+
+### Tags
+
+| Tag           | Meaning                                                     |
+| ------------- | ----------------------------------------------------------- |
+| `latest`      | Most recent release. Fine for a home server.                 |
+| `1`, `1.2`    | Floating major / minor — picks up patches automatically.     |
+| `1.2.0`       | Exact release. Pin this if you want reproducible deploys.    |
+| `sha-<commit>`| The exact commit an image was built from.                    |
+
+> **Architecture:** images are published for **linux/amd64** only. On an arm64 host (Apple Silicon,
+> Raspberry Pi) Docker will either refuse to run it or fall back to slow emulation — pass
+> `--platform linux/amd64` to emulate, or build natively from source (below).
+
+### Building from source instead
+
+```bash
+docker build -t personal-media-host .
+```
+
+Then run it exactly as above, substituting `personal-media-host` for the image name.
 
 ### Environment variables
 
@@ -100,18 +123,3 @@ docker run -d --name media-host -p 3000:3000 \
 | `FFMPEG_PATH`      | `/usr/bin/ffmpeg`     | ffmpeg binary (falls back to `ffmpeg-static`).     |
 | `SCAN_AT_HOUR`     | `3`                   | Hour (0–23, local) of the daily scan; `off` to disable. |
 | `SCAN_ON_STARTUP`  | `false`               | Also scan once when the server starts.             |
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.

@@ -14,15 +14,19 @@ import {
   collections,
   episodes,
   genres,
+  keywords,
   movieCast,
   movieGenres,
+  movieKeywords,
   movies,
   people,
   profiles,
   seasons,
   showCast,
   showGenres,
+  showKeywords,
   shows,
+  videos,
   watchlist,
   watchProgress,
   appSettings,
@@ -300,6 +304,46 @@ function showGenresFor(showId: number) {
     .all();
 }
 
+function movieKeywordsFor(movieId: number) {
+  return db
+    .select({ id: keywords.id, name: keywords.name })
+    .from(movieKeywords)
+    .innerJoin(keywords, eq(movieKeywords.keywordId, keywords.id))
+    .where(eq(movieKeywords.movieId, movieId))
+    .all();
+}
+
+function showKeywordsFor(showId: number) {
+  return db
+    .select({ id: keywords.id, name: keywords.name })
+    .from(showKeywords)
+    .innerJoin(keywords, eq(showKeywords.keywordId, keywords.id))
+    .where(eq(showKeywords.showId, showId))
+    .all();
+}
+
+export interface VideoItem {
+  id: number;
+  youtubeKey: string;
+  name: string;
+  type: string;
+}
+
+/** A title's videos in ingest order (trailers first — see `videosOf` in lib/tmdb). */
+function videosFor(mediaType: "movie" | "show", mediaId: number): VideoItem[] {
+  return db
+    .select({
+      id: videos.id,
+      youtubeKey: videos.youtubeKey,
+      name: videos.name,
+      type: videos.type,
+    })
+    .from(videos)
+    .where(and(eq(videos.mediaType, mediaType), eq(videos.mediaId, mediaId)))
+    .orderBy(asc(videos.position))
+    .all();
+}
+
 export interface CastMember {
   id: number;
   name: string;
@@ -328,17 +372,27 @@ function showCastFor(showId: number): CastMember[] {
 
 export interface MovieDetail extends Movie {
   genres: { id: number; name: string }[];
+  keywords: { id: number; name: string }[];
+  videos: VideoItem[];
   cast: CastMember[];
 }
 
 export function getMovieDetail(id: number): MovieDetail | null {
   const movie = db.select().from(movies).where(eq(movies.id, id)).get();
   if (!movie) return null;
-  return { ...movie, genres: movieGenresFor(id), cast: movieCastFor(id) };
+  return {
+    ...movie,
+    genres: movieGenresFor(id),
+    keywords: movieKeywordsFor(id),
+    videos: videosFor("movie", id),
+    cast: movieCastFor(id),
+  };
 }
 
 export interface ShowDetail extends Show {
   genres: { id: number; name: string }[];
+  keywords: { id: number; name: string }[];
+  videos: VideoItem[];
   cast: CastMember[];
   seasons: (Season & { episodes: Episode[] })[];
 }
@@ -367,9 +421,124 @@ export function getShowDetail(id: number): ShowDetail | null {
   return {
     ...show,
     genres: showGenresFor(id),
+    keywords: showKeywordsFor(id),
+    videos: videosFor("show", id),
     cast: showCastFor(id),
     seasons: seasonsWithEpisodes,
   };
+}
+
+/**
+ * "More Like This": other titles scored by overlap with this one. Keywords are a
+ * far more specific signal than genres, so they weigh more. Falls back to
+ * genre-only similarity for titles that haven't been re-scanned for keywords yet.
+ */
+const KEYWORD_WEIGHT = 3;
+const GENRE_WEIGHT = 1;
+/**
+ * The quality floor. A single shared genre is a coincidence, not a
+ * recommendation ("Comedy" alone would pair a Pixar film with a Denzel shooter),
+ * so genres never qualify a title on their own — they only refine the ranking.
+ */
+const MIN_SHARED_KEYWORDS = 2;
+
+interface Candidate {
+  mediaType: "movie" | "show";
+  mediaId: number;
+  score: number;
+  voteAverage: number;
+}
+
+export function getRelated(
+  mediaType: "movie" | "show",
+  id: number,
+  limit = 12,
+): CardItem[] {
+  const keywordIds = (
+    mediaType === "movie" ? movieKeywordsFor(id) : showKeywordsFor(id)
+  ).map((k) => k.id);
+  // Nothing can clear the bar if this title isn't itself tagged enough.
+  if (keywordIds.length < MIN_SHARED_KEYWORDS) return [];
+
+  // 1. Gate: only titles sharing enough keywords are even candidates.
+  const keywordHits = new Map<string, number>();
+  db.select({ mediaId: movieKeywords.movieId, hits: sql<number>`count(*)` })
+    .from(movieKeywords)
+    .where(inArray(movieKeywords.keywordId, keywordIds))
+    .groupBy(movieKeywords.movieId)
+    .all()
+    .forEach((r) => keywordHits.set(`movie-${r.mediaId}`, r.hits));
+
+  db.select({ mediaId: showKeywords.showId, hits: sql<number>`count(*)` })
+    .from(showKeywords)
+    .where(inArray(showKeywords.keywordId, keywordIds))
+    .groupBy(showKeywords.showId)
+    .all()
+    .forEach((r) => keywordHits.set(`show-${r.mediaId}`, r.hits));
+
+  keywordHits.delete(`${mediaType}-${id}`); // never recommend itself
+  for (const [key, hits] of keywordHits) {
+    if (hits < MIN_SHARED_KEYWORDS) keywordHits.delete(key);
+  }
+  if (keywordHits.size === 0) return [];
+
+  // 2. Shared genres refine the score of the titles that already qualified.
+  const genreIds = (
+    mediaType === "movie" ? movieGenresFor(id) : showGenresFor(id)
+  ).map((g) => g.id);
+  const genreHits = new Map<string, number>();
+  if (genreIds.length > 0) {
+    db.select({ mediaId: movieGenres.movieId, hits: sql<number>`count(*)` })
+      .from(movieGenres)
+      .where(inArray(movieGenres.genreId, genreIds))
+      .groupBy(movieGenres.movieId)
+      .all()
+      .forEach((r) => genreHits.set(`movie-${r.mediaId}`, r.hits));
+
+    db.select({ mediaId: showGenres.showId, hits: sql<number>`count(*)` })
+      .from(showGenres)
+      .where(inArray(showGenres.genreId, genreIds))
+      .groupBy(showGenres.showId)
+      .all()
+      .forEach((r) => genreHits.set(`show-${r.mediaId}`, r.hits));
+  }
+
+  // 3. Ratings, so the best of the related titles surface first.
+  const movieIds: number[] = [];
+  const showIds: number[] = [];
+  for (const key of keywordHits.keys()) {
+    const [kind, raw] = key.split("-");
+    (kind === "movie" ? movieIds : showIds).push(Number(raw));
+  }
+  const ratings = new Map<string, number>();
+  if (movieIds.length > 0) {
+    db.select({ id: movies.id, voteAverage: movies.voteAverage })
+      .from(movies)
+      .where(inArray(movies.id, movieIds))
+      .all()
+      .forEach((r) => ratings.set(`movie-${r.id}`, r.voteAverage ?? 0));
+  }
+  if (showIds.length > 0) {
+    db.select({ id: shows.id, voteAverage: shows.voteAverage })
+      .from(shows)
+      .where(inArray(shows.id, showIds))
+      .all()
+      .forEach((r) => ratings.set(`show-${r.id}`, r.voteAverage ?? 0));
+  }
+
+  const candidates: Candidate[] = [...keywordHits].map(([key, hits]) => {
+    const [kind, raw] = key.split("-");
+    return {
+      mediaType: kind as "movie" | "show",
+      mediaId: Number(raw),
+      score: hits * KEYWORD_WEIGHT + (genreHits.get(key) ?? 0) * GENRE_WEIGHT,
+      voteAverage: ratings.get(key) ?? 0,
+    };
+  });
+
+  // Highest rated first; unrated (0) sinks to the bottom. Similarity breaks ties.
+  candidates.sort((a, b) => b.voteAverage - a.voteAverage || b.score - a.score);
+  return cardsForItems(candidates.slice(0, limit));
 }
 
 export interface CardPreview {
@@ -380,6 +549,8 @@ export interface CardPreview {
   posterPath: string | null;
   certification: string | null;
   runtime: string | null;
+  voteAverage: number | null;
+  voteCount: number | null;
   genres: { id: number; name: string }[];
   playableId: string | null;
   inList: boolean;
@@ -402,6 +573,8 @@ export function getCardPreview(
       posterPath: m.posterPath,
       certification: m.certification,
       runtime: formatRuntime(m.runtimeMinutes),
+      voteAverage: m.voteAverage,
+      voteCount: m.voteCount,
       genres: movieGenresFor(m.id),
       playableId: toPlayableId("movie", m.id),
       inList: profileId ? isInWatchlist(profileId, "movie", m.id) : false,
@@ -426,6 +599,8 @@ export function getCardPreview(
     posterPath: s.posterPath,
     certification: s.certification,
     runtime: formatRuntime(firstEp?.runtimeMinutes),
+    voteAverage: s.voteAverage,
+    voteCount: s.voteCount,
     genres: showGenresFor(s.id),
     playableId: firstEpisodePlayableId(s.id),
     inList: profileId ? isInWatchlist(profileId, "show", s.id) : false,
@@ -548,9 +723,10 @@ export function searchLibraryPage(
 
   const rows = db.$client
     .prepare(
+      // One weight per column: title, cast_names, genres, keywords, kind, media_id.
       `SELECT kind, media_id AS mediaId FROM search_index
          WHERE search_index MATCH ?
-         ORDER BY bm25(search_index, 10, 4, 2, 0, 0)
+         ORDER BY bm25(search_index, 10, 4, 2, 3, 0, 0)
          LIMIT ? OFFSET ?`,
     )
     .all(match, limit, offset) as { kind: "movie" | "show"; mediaId: number }[];

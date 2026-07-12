@@ -33,3 +33,30 @@ body {
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
+
+/* Video overlay entrance: the player scales up into the center of the screen.
+   Driven by CSS rather than state, since the overlay mounts fresh on each open. */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes expand-in {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+}
+.animate-fade-in {
+  animation: fade-in 200ms ease-out;
+}
+.animate-expand-in {
+  animation: expand-in 200ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in,
+  .animate-expand-in {
+    animation: none;
+  }
+}

@@ -16,12 +16,25 @@ function raw(db: DB): Database.Database {
  * Full-text search index over the library. drizzle can't model a virtual table,
  * so it's created/queried with raw SQL via the underlying connection. Columns:
  * indexed text first (so bm25 weights line up), then UNINDEXED keys we read back.
+ *
+ * `CREATE VIRTUAL TABLE IF NOT EXISTS` won't add columns to an index built by an
+ * older version, so drop a table missing the newest column first. Startup then
+ * sees an empty index over a non-empty library and reindexes (instrumentation).
  */
 export function ensureSearchIndex(db: DB): void {
-  raw(db).exec(`CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
+  const conn = raw(db);
+  const columns = conn.prepare("PRAGMA table_info(search_index)").all() as {
+    name: string;
+  }[];
+  if (columns.length > 0 && !columns.some((c) => c.name === "keywords")) {
+    conn.exec("DROP TABLE search_index");
+  }
+
+  conn.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
     title,
     cast_names,
     genres,
+    keywords,
     kind UNINDEXED,
     media_id UNINDEXED,
     tokenize = 'unicode61'
@@ -55,7 +68,7 @@ export function reindexSearch(db: DB, log: Logger): void {
     .all();
 
   const insert = raw(db).prepare(
-    "INSERT INTO search_index (title, cast_names, genres, kind, media_id) VALUES (?, ?, ?, ?, ?)",
+    "INSERT INTO search_index (title, cast_names, genres, keywords, kind, media_id) VALUES (?, ?, ?, ?, ?, ?)",
   );
   const clear = raw(db).prepare("DELETE FROM search_index");
 
@@ -79,7 +92,15 @@ export function reindexSearch(db: DB, log: Logger): void {
         .all()
         .map((r) => r.name)
         .join(" ");
-      insert.run(m.title, cast, genres, "movie", m.id);
+      const keywords = db
+        .select({ name: schema.keywords.name })
+        .from(schema.movieKeywords)
+        .innerJoin(schema.keywords, eq(schema.movieKeywords.keywordId, schema.keywords.id))
+        .where(eq(schema.movieKeywords.movieId, m.id))
+        .all()
+        .map((r) => r.name)
+        .join(" ");
+      insert.run(m.title, cast, genres, keywords, "movie", m.id);
     }
 
     for (const s of showRows) {
@@ -109,7 +130,15 @@ export function reindexSearch(db: DB, log: Logger): void {
         .all()
         .map((r) => r.name)
         .join(" ");
-      insert.run(`${s.name} ${episodeNames}`.trim(), cast, genres, "show", s.id);
+      const keywords = db
+        .select({ name: schema.keywords.name })
+        .from(schema.showKeywords)
+        .innerJoin(schema.keywords, eq(schema.showKeywords.keywordId, schema.keywords.id))
+        .where(eq(schema.showKeywords.showId, s.id))
+        .all()
+        .map((r) => r.name)
+        .join(" ");
+      insert.run(`${s.name} ${episodeNames}`.trim(), cast, genres, keywords, "show", s.id);
     }
   });
 

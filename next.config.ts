@@ -30,6 +30,13 @@ const nextConfig: NextConfig = {
         hostname: "image.tmdb.org",
         pathname: "/t/p/**",
       },
+      // Trailer/clip thumbnails in the video gallery. The videos themselves are
+      // never stored — we only keep the YouTube id and embed on click.
+      {
+        protocol: "https",
+        hostname: "i.ytimg.com",
+        pathname: "/vi/**",
+      },
     ],
   },
 };
