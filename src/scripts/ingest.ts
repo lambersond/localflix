@@ -163,7 +163,8 @@ async function main() {
       !process.argv.includes("--skip-non-playable") && boolSetting("include_non_playable");
     const cacheArtwork =
       !process.argv.includes("--no-artwork") && boolSetting("cache_artwork_on_scan");
-    await scanner.runScan({ mediaDir: root, includeNonPlayable, cacheArtwork });
+    const onlyNew = process.argv.includes("--new");
+    await scanner.runScan({ mediaDir: root, includeNonPlayable, cacheArtwork, onlyNew });
   } else {
     console.log(`Ingesting ${library.length} library entr(ies)…`);
     for (const entry of library) {

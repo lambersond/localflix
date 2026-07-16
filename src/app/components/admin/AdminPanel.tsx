@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 
 import {
   findBrokenLinksAction,
+  findUntrackedFilesAction,
   removeBrokenLinksAction,
   setAutoScanEnabledAction,
   setCacheArtworkOnScanAction,
@@ -13,6 +14,13 @@ import {
   triggerTranscodeAction,
 } from "@/app/actions/admin";
 import type { BrokenLink } from "@/db/queries";
+import type { UntrackedReason, UntrackedResult } from "@/lib/untracked";
+
+const UNTRACKED_LABEL: Record<UntrackedReason, string> = {
+  "no-match": "No match",
+  "non-playable": "Non-playable",
+  "no-episode-number": "No SxxEyy",
+};
 
 const BUTTON_CLASS =
   "rounded bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent/80 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50";
@@ -84,12 +92,16 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
   const [pending, startTransition] = useTransition();
   const [message, setMessage] = useState<string | null>(null);
   const [deleteOriginals, setDeleteOriginals] = useState(false);
+  const [scanOnlyNew, setScanOnlyNew] = useState(false);
   const logRef = useRef<HTMLPreElement>(null);
 
   // Broken-links review flow: null = not yet checked, [] = checked & all present.
   const [broken, setBroken] = useState<BrokenLink[] | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const brokenKey = (b: BrokenLink) => `${b.kind}-${b.id}`;
+
+  // Untracked-files diagnostic: null = not yet checked.
+  const [untracked, setUntracked] = useState<UntrackedResult | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -149,6 +161,12 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
       const found = await findBrokenLinksAction();
       setBroken(found);
       setSelected(new Set(found.map(brokenKey))); // default: all selected
+    });
+  }
+
+  function onFindUntracked() {
+    startTransition(async () => {
+      setUntracked(await findUntrackedFilesAction());
     });
   }
 
@@ -216,11 +234,20 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
           />
           Run automatic daily scans
         </label>
+        <label className={CHECKBOX_LABEL_CLASS}>
+          <input
+            type="checkbox"
+            className="cursor-pointer"
+            checked={scanOnlyNew}
+            onChange={(e) => setScanOnlyNew(e.target.checked)}
+          />
+          Only new files (skip titles already in the library)
+        </label>
         <div>
           <button
             type="button"
             disabled={pending || running}
-            onClick={() => run(triggerScanAction)}
+            onClick={() => run(() => triggerScanAction(scanOnlyNew))}
             className={BUTTON_CLASS}
           >
             Scan now
@@ -391,6 +418,56 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
                 Remove selected ({selected.size})
               </button>
             </div>
+          </div>
+        )}
+      </section>
+
+      {/* Untracked files (on disk, no DB record) */}
+      <section className="flex flex-col gap-3 rounded-lg bg-surface/50 p-5">
+        <h2 className="text-lg font-semibold">Untracked files</h2>
+        <p className="text-sm text-muted">
+          Find video files under MEDIA_DIR that have no library record — titles that failed to import.
+        </p>
+        <div>
+          <button
+            type="button"
+            disabled={pending || running}
+            onClick={onFindUntracked}
+            className={BUTTON_CLASS}
+          >
+            Find untracked files
+          </button>
+        </div>
+
+        {untracked !== null && untracked.discovered === 0 && (
+          <p className="rounded bg-yellow-500/10 px-3 py-2 text-sm text-yellow-400">
+            No media files found under MEDIA_DIR — is the share mounted?
+          </p>
+        )}
+
+        {untracked !== null && untracked.discovered > 0 && untracked.files.length === 0 && (
+          <p className="text-sm text-green-400">Every media file is tracked.</p>
+        )}
+
+        {untracked !== null && untracked.files.length > 0 && (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-muted">
+              {untracked.files.length} untracked file(s). Fix filenames or transcode, then run{" "}
+              <span className="font-medium text-foreground">Scan now</span> with{" "}
+              <span className="font-medium text-foreground">Only new files</span> checked.
+            </p>
+            <ul className="flex max-h-96 flex-col divide-y divide-white/10 overflow-auto rounded bg-black/30">
+              {untracked.files.map((u) => (
+                <li key={u.path} className="flex items-start gap-3 p-3">
+                  <span className="shrink-0 rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
+                    {UNTRACKED_LABEL[u.reason]}
+                  </span>
+                  <span className="min-w-0 flex-1 break-all font-mono text-[11px] text-foreground/80">
+                    {u.path}
+                  </span>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
       </section>

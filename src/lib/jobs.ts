@@ -1,3 +1,5 @@
+import { basename } from "node:path";
+
 import { eq } from "drizzle-orm";
 
 import { db } from "@/db";
@@ -10,6 +12,7 @@ import {
   type JobKind,
   type JobState,
 } from "@/lib/job-state";
+import { openJobLog } from "@/lib/logs";
 import { createScanner, type Logger } from "@/lib/scan";
 import { runDbTranscode } from "@/lib/transcode-core";
 
@@ -49,10 +52,15 @@ export function triggerJob(
     .returning({ id: jobRuns.id })
     .get().id;
 
+  // Every line is written to a timestamped log file (full, uncapped) and to the
+  // in-memory buffer the live panel reads (capped for memory).
+  const jobLog = openJobLog(kind, startedAt);
   const log: Logger = (line) => {
+    jobLog.write(line);
     state.log.push(line);
     if (state.log.length > MAX_LOG_LINES) state.log.shift();
   };
+  log(`→ log file: ${jobLog.path}`);
 
   void (async () => {
     try {
@@ -65,8 +73,12 @@ export function triggerJob(
       state.summary = msg;
     } finally {
       state.finishedAt = new Date().toISOString();
+      jobLog.close();
+      // Record which log file holds this run, so the panel can point at it.
+      const summary = `${state.summary ?? ""} · log: ${basename(jobLog.path)}`.replace(/^ · /, "");
+      state.summary = summary;
       db.update(jobRuns)
-        .set({ status: state.status, finishedAt: state.finishedAt, summary: state.summary })
+        .set({ status: state.status, finishedAt: state.finishedAt, summary })
         .where(eq(jobRuns.id, runId))
         .run();
     }
@@ -75,8 +87,12 @@ export function triggerJob(
   return { started: true, message: `${kind} started.` };
 }
 
-/** Trigger a TMDB library scan using the current include-non-playable setting. */
-export function triggerScan(): TriggerResult {
+/**
+ * Trigger a TMDB library scan using the current include-non-playable setting.
+ * When `onlyNew` is set, files already in the library are skipped (no TMDB
+ * lookup), so fixing a handful of titles doesn't re-query the whole library.
+ */
+export function triggerScan(onlyNew = false): TriggerResult {
   return triggerJob("scan", async (log) => {
     const scanner = createScanner(db, log);
     const mediaDir = process.env.MEDIA_DIR ?? "./media";
@@ -84,8 +100,9 @@ export function triggerScan(): TriggerResult {
       mediaDir,
       includeNonPlayable: getIncludeNonPlayable(),
       cacheArtwork: getCacheArtworkOnScan(),
+      onlyNew,
     });
-    return `movies=${summary.movies} shows=${summary.shows}`;
+    return `movies=${summary.movies} shows=${summary.shows}${onlyNew ? " (new only)" : ""}`;
   });
 }
 

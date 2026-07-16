@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const DEBOUNCE_MS = 200;
 
@@ -21,20 +21,36 @@ export default function SearchBar({
   const pathname = usePathname();
   const [value, setValue] = useState(initialQuery);
 
+  // Read the current path without making it an effect dependency: the bar lives
+  // in the persistent navbar, so if `pathname` drove the effect, navigating away
+  // from /search (e.g. clicking a result) would re-fire it and push us back to
+  // /search while the input still holds the query. Navigation must be driven by
+  // typing (`value`) only.
+  const pathnameRef = useRef(pathname);
+  useEffect(() => {
+    pathnameRef.current = pathname;
+  }, [pathname]);
+
   // Debounce: 200ms after typing stops, show the filtered grid page.
   useEffect(() => {
     const handle = setTimeout(() => {
       const q = value.trim();
-      const target = q ? `/search?q=${encodeURIComponent(q)}` : "/search";
-      if (pathname === "/search") {
-        // Already on the grid page — update results without stacking history.
-        router.replace(target);
+      const onSearch = pathnameRef.current === "/search";
+      const currentQ = onSearch
+        ? new URLSearchParams(window.location.search).get("q")?.trim() ?? ""
+        : null;
+      if (onSearch) {
+        // Already on the grid page — update results without stacking history,
+        // but skip a no-op replace (e.g. this field mounting with its query).
+        if (q !== currentQ) {
+          router.replace(q ? `/search?q=${encodeURIComponent(q)}` : "/search");
+        }
       } else if (q) {
-        router.push(target);
+        router.push(`/search?q=${encodeURIComponent(q)}`);
       }
     }, DEBOUNCE_MS);
     return () => clearTimeout(handle);
-  }, [value, pathname, router]);
+  }, [value, router]);
 
   function onSubmit(event: React.FormEvent) {
     event.preventDefault();

@@ -2,7 +2,7 @@ import { statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 
 import * as schema from "../db/schema";
@@ -59,6 +59,8 @@ export interface ScanOptions {
   includeNonPlayable: boolean;
   /** When true, pre-download artwork to local disk after ingest. */
   cacheArtwork?: boolean;
+  /** When true, skip files already in the library (no TMDB lookup for them). */
+  onlyNew?: boolean;
 }
 
 export interface ScanSummary {
@@ -93,7 +95,7 @@ export function createScanner(db: DB, log: Logger) {
     try {
       fileSize = statSync(absPath).size;
     } catch {
-      log(`  ⚠ file not found on disk (still recorded): ${absPath}`);
+      log(`  ✗ FILE MISSING (recorded anyway): ${absPath}`);
     }
     return { absPath, fileSize, mimeType: mimeTypeForFile(absPath) };
   }
@@ -254,7 +256,7 @@ export function createScanner(db: DB, log: Logger) {
     const tmdbId =
       entry.tmdbId ?? (entry.searchTitle ? await searchTv(entry.searchTitle) : null);
     if (!tmdbId) {
-      log(`  ⚠ could not resolve show: ${entry.searchTitle ?? "(no title)"}`);
+      log(`  ✗ NO TMDB MATCH (show): ${entry.searchTitle ?? "(no title)"}`);
       return null;
     }
 
@@ -442,7 +444,63 @@ export function createScanner(db: DB, log: Logger) {
     return { kept, skipped: preferred.length - kept.length };
   }
 
-  async function scanMovies(rootDir: string, includeNonPlayable: boolean): Promise<number> {
+  /** Absolute paths of every file already in the library (movies + episodes). */
+  function loadKnownPaths(): Set<string> {
+    const set = new Set<string>();
+    for (const m of db.select({ filePath: schema.movies.filePath }).from(schema.movies).all()) {
+      set.add(m.filePath);
+    }
+    for (const e of db.select({ filePath: schema.episodes.filePath }).from(schema.episodes).all()) {
+      set.add(e.filePath);
+    }
+    return set;
+  }
+
+  /**
+   * Rebuild a "row" collection from the full library (all movies or all shows),
+   * ordered alphabetically. Used by an incremental scan so newly-added titles
+   * join the home rows without shrinking them to just this run's matches.
+   */
+  function rebuildRowFromDb(mediaType: "movie" | "show") {
+    if (mediaType === "movie") {
+      const all = db
+        .select({ tmdbId: schema.movies.tmdbId })
+        .from(schema.movies)
+        .orderBy(asc(schema.movies.title))
+        .all();
+      buildCollections([
+        {
+          slug: "my-movies",
+          title: "Movies",
+          kind: "row",
+          sortOrder: 1,
+          items: all.map((m) => ({ type: "movie" as const, tmdbId: m.tmdbId })),
+        },
+      ]);
+    } else {
+      const all = db
+        .select({ tmdbId: schema.shows.tmdbId })
+        .from(schema.shows)
+        .orderBy(asc(schema.shows.name))
+        .all();
+      buildCollections([
+        {
+          slug: "tv-shows",
+          title: "TV Shows",
+          kind: "row",
+          sortOrder: 2,
+          items: all.map((s) => ({ type: "show" as const, tmdbId: s.tmdbId })),
+        },
+      ]);
+    }
+  }
+
+  async function scanMovies(
+    rootDir: string,
+    includeNonPlayable: boolean,
+    onlyNew: boolean,
+    knownPaths: Set<string>,
+  ): Promise<number> {
     const root = resolve(rootDir);
     log(`Scanning ${root} for movies…`);
 
@@ -458,67 +516,97 @@ export function createScanner(db: DB, log: Logger) {
 
     const matched: number[] = [];
     const seen = new Set<number>();
+    let imported = 0;
+    let noMatch = 0;
+    let errors = 0;
+    let skippedExisting = 0;
 
     for (const file of files) {
-      const { title, year } = parseMovieFilename(file);
-      const yearLabel = year ? ` (${year})` : "";
-      let tmdbId = await searchMovie(title, year);
-      if (!tmdbId && year) tmdbId = await searchMovie(title);
-      if (!tmdbId) {
-        log(`  ⚠ no TMDB match for "${title}"${yearLabel} — ${basename(file)}`);
+      if (onlyNew && knownPaths.has(resolve(file))) {
+        skippedExisting++;
         continue;
       }
+      // Isolate each file so one bad title (or a TMDB hiccup) doesn't abort the run.
+      try {
+        const { title, year } = parseMovieFilename(file);
+        const yearLabel = year ? ` (${year})` : "";
+        let tmdbId = await searchMovie(title, year);
+        if (!tmdbId && year) tmdbId = await searchMovie(title);
+        if (!tmdbId) {
+          log(`  ✗ NO TMDB MATCH: "${title}"${yearLabel} — ${basename(file)}`);
+          noMatch++;
+          continue;
+        }
 
-      const d = await getMovieDetails(tmdbId);
-      const id = upsertMovie({
-        tmdbId: d.id,
-        title: d.title,
-        overview: d.overview,
-        posterPath: d.poster_path,
-        backdropPath: d.backdrop_path,
-        releaseDate: d.release_date,
-        runtimeMinutes: d.runtime,
-        certification: await getMovieCertification(d.id),
-        voteAverage: d.vote_average,
-        voteCount: d.vote_count,
-        tmdbCollectionId: d.belongs_to_collection?.id ?? null,
-        genres: d.genres,
-        keywords: keywordsOf(d),
-        videos: await filterAvailableVideos(videosOf(d), log),
-        filePath: file,
-      });
-      await ingestMovieCast(id, d.id);
-      const yr = d.release_date ? ` (${d.release_date.slice(0, 4)})` : "";
-      log(`  ✓ ${d.title}${yr} -> ${basename(file)} (id ${id})`);
-      if (!seen.has(d.id)) {
-        seen.add(d.id);
-        matched.push(d.id);
+        const d = await getMovieDetails(tmdbId);
+        const id = upsertMovie({
+          tmdbId: d.id,
+          title: d.title,
+          overview: d.overview,
+          posterPath: d.poster_path,
+          backdropPath: d.backdrop_path,
+          releaseDate: d.release_date,
+          runtimeMinutes: d.runtime,
+          certification: await getMovieCertification(d.id),
+          voteAverage: d.vote_average,
+          voteCount: d.vote_count,
+          tmdbCollectionId: d.belongs_to_collection?.id ?? null,
+          genres: d.genres,
+          keywords: keywordsOf(d),
+          videos: await filterAvailableVideos(videosOf(d), log),
+          filePath: file,
+        });
+        await ingestMovieCast(id, d.id);
+        const yr = d.release_date ? ` (${d.release_date.slice(0, 4)})` : "";
+        log(`  ✓ ${d.title}${yr} -> ${basename(file)} (id ${id})`);
+        imported++;
+        if (!seen.has(d.id)) {
+          seen.add(d.id);
+          matched.push(d.id);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`  ✗ TMDB ERROR: ${basename(file)} — ${msg}`);
+        errors++;
       }
     }
 
-    if (matched.length === 0) return 0;
+    const existingMsg = onlyNew ? ` · ${skippedExisting} already-indexed` : "";
+    log(`Movies: ${imported} imported · ${noMatch} no-match · ${errors} error(s)${existingMsg}`);
 
-    buildCollections([
-      {
-        slug: "featured",
-        title: "Featured",
-        kind: "hero",
-        items: [{ type: "movie", tmdbId: matched[0] }],
-      },
-      {
-        slug: "my-movies",
-        title: "Movies",
-        kind: "row",
-        sortOrder: 1,
-        items: matched.map((tmdbId) => ({ type: "movie" as const, tmdbId })),
-      },
-    ]);
+    if (onlyNew) {
+      // Fold new titles into the full Movies row; leave the hero untouched.
+      if (imported > 0) rebuildRowFromDb("movie");
+    } else if (matched.length > 0) {
+      buildCollections([
+        {
+          slug: "featured",
+          title: "Featured",
+          kind: "hero",
+          items: [{ type: "movie", tmdbId: matched[0] }],
+        },
+        {
+          slug: "my-movies",
+          title: "Movies",
+          kind: "row",
+          sortOrder: 1,
+          items: matched.map((tmdbId) => ({ type: "movie" as const, tmdbId })),
+        },
+      ]);
+    }
     return matched.length;
   }
 
-  async function scanShows(rootDir: string, includeNonPlayable: boolean): Promise<number> {
+  async function scanShows(
+    rootDir: string,
+    includeNonPlayable: boolean,
+    onlyNew: boolean,
+    knownPaths: Set<string>,
+  ): Promise<number> {
     const root = resolve(rootDir);
     const scannedTmdbIds: number[] = [];
+    let errors = 0;
+    let skippedShows = 0;
 
     for (const rootName of SHOW_ROOT_NAMES) {
       const showsRoot = join(root, rootName);
@@ -532,47 +620,66 @@ export function createScanner(db: DB, log: Logger) {
       for (const showDir of showDirs) {
         if (!showDir.isDirectory() || showDir.name.startsWith(".")) continue;
 
-        const { kept: files, skipped } = filterFiles(
-          await walkVideos(join(showsRoot, showDir.name)),
-          includeNonPlayable,
-        );
-        if (skipped > 0) log(`  ⏭ skipped ${skipped} non-playable file(s) in ${showDir.name}.`);
-        if (files.length === 0) continue;
+        // Isolate each show so one bad title (or a TMDB hiccup) doesn't abort the run.
+        try {
+          const { kept: files, skipped } = filterFiles(
+            await walkVideos(join(showsRoot, showDir.name)),
+            includeNonPlayable,
+          );
+          if (skipped > 0) log(`  ⏭ skipped ${skipped} non-playable file(s) in ${showDir.name}.`);
+          if (files.length === 0) continue;
 
-        const episodes: { season: number; episode: number; filePath: string }[] = [];
-        for (const file of files) {
-          const parsed = parseEpisodeNumbers(file);
-          if (!parsed) {
-            log(`  ⚠ no SxxEyy pattern in ${basename(file)} — skipping`);
+          const episodes: { season: number; episode: number; filePath: string }[] = [];
+          for (const file of files) {
+            if (onlyNew && knownPaths.has(resolve(file))) continue; // already indexed
+            const parsed = parseEpisodeNumbers(file);
+            if (!parsed) {
+              log(`  ✗ NO SxxEyy: ${basename(file)}`);
+              continue;
+            }
+            episodes.push({ ...parsed, filePath: file });
+          }
+          if (episodes.length === 0) {
+            if (onlyNew) skippedShows++; // no new episodes — skip TMDB entirely
             continue;
           }
-          episodes.push({ ...parsed, filePath: file });
-        }
-        if (episodes.length === 0) continue;
 
-        log(`Scanning show "${showDir.name}" (${episodes.length} episode file(s))…`);
-        const showId = await ingestShow({ searchTitle: showDir.name, episodes });
-        if (showId !== null) {
-          const show = db
-            .select({ tmdbId: schema.shows.tmdbId })
-            .from(schema.shows)
-            .where(eq(schema.shows.id, showId))
-            .get();
-          if (show) scannedTmdbIds.push(show.tmdbId);
+          log(`Scanning show "${showDir.name}" (${episodes.length} episode file(s))…`);
+          const showId = await ingestShow({ searchTitle: showDir.name, episodes });
+          if (showId !== null) {
+            const show = db
+              .select({ tmdbId: schema.shows.tmdbId })
+              .from(schema.shows)
+              .where(eq(schema.shows.id, showId))
+              .get();
+            if (show) scannedTmdbIds.push(show.tmdbId);
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log(`  ✗ TMDB ERROR (show ${showDir.name}): ${msg}`);
+          errors++;
         }
       }
     }
 
+    const existingMsg = onlyNew ? ` · ${skippedShows} show(s) with no new episodes` : "";
+    log(`Shows: ${scannedTmdbIds.length} ingested · ${errors} error(s)${existingMsg}`);
+
     if (scannedTmdbIds.length === 0) return 0;
-    buildCollections([
-      {
-        slug: "tv-shows",
-        title: "TV Shows",
-        kind: "row",
-        sortOrder: 2,
-        items: scannedTmdbIds.map((tmdbId) => ({ type: "show" as const, tmdbId })),
-      },
-    ]);
+
+    if (onlyNew) {
+      rebuildRowFromDb("show");
+    } else {
+      buildCollections([
+        {
+          slug: "tv-shows",
+          title: "TV Shows",
+          kind: "row",
+          sortOrder: 2,
+          items: scannedTmdbIds.map((tmdbId) => ({ type: "show" as const, tmdbId })),
+        },
+      ]);
+    }
     return scannedTmdbIds.length;
   }
 
@@ -582,8 +689,13 @@ export function createScanner(db: DB, log: Logger) {
         "TMDB_API_TOKEN is not set — scanning needs it to look up titles. Add a v4 read token to .env.local.",
       );
     }
-    const movies = await scanMovies(opts.mediaDir, opts.includeNonPlayable);
-    const shows = await scanShows(opts.mediaDir, opts.includeNonPlayable);
+    const onlyNew = !!opts.onlyNew;
+    const knownPaths = onlyNew ? loadKnownPaths() : new Set<string>();
+    if (onlyNew) {
+      log(`Incremental scan: ${knownPaths.size} already-indexed file(s) will be skipped.`);
+    }
+    const movies = await scanMovies(opts.mediaDir, opts.includeNonPlayable, onlyNew, knownPaths);
+    const shows = await scanShows(opts.mediaDir, opts.includeNonPlayable, onlyNew, knownPaths);
     if (opts.cacheArtwork) await cacheArtwork(db, log);
     reindexSearch(db, log);
     return { movies, shows, skipped: 0 };

@@ -18,10 +18,11 @@ import {
   triggerTranscode,
   type TriggerResult,
 } from "@/lib/jobs";
+import { findUntrackedFiles, type UntrackedResult } from "@/lib/untracked";
 
-/** Kick off a TMDB library scan (background job). */
-export async function triggerScanAction(): Promise<TriggerResult> {
-  const result = triggerScan();
+/** Kick off a TMDB library scan (background job). `onlyNew` skips indexed files. */
+export async function triggerScanAction(onlyNew = false): Promise<TriggerResult> {
+  const result = triggerScan(onlyNew);
   revalidatePath("/admin");
   return result;
 }
@@ -72,4 +73,9 @@ export async function removeBrokenLinksAction(
   const summary = removeBrokenLinks(items);
   revalidatePath("/admin");
   return summary;
+}
+
+/** List video files on disk that have no DB record (on-demand; walks MEDIA_DIR). */
+export async function findUntrackedFilesAction(): Promise<UntrackedResult> {
+  return findUntrackedFiles();
 }
