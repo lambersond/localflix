@@ -3,9 +3,14 @@
 import { revalidatePath } from "next/cache";
 
 import {
+  AUTO_SCAN_ENABLED_KEY,
   CACHE_ARTWORK_ON_SCAN_KEY,
+  findBrokenLinks,
   INCLUDE_NON_PLAYABLE_KEY,
+  removeBrokenLinks,
   setSetting,
+  type BrokenLink,
+  type RemovalSummary,
 } from "@/db/queries";
 import {
   triggerArtwork,
@@ -47,4 +52,24 @@ export async function triggerArtworkAction(): Promise<TriggerResult> {
 export async function setCacheArtworkOnScanAction(value: boolean): Promise<void> {
   setSetting(CACHE_ARTWORK_ON_SCAN_KEY, value ? "true" : "false");
   revalidatePath("/admin");
+}
+
+/** Toggle whether the scheduler runs automatic (daily / on-startup) scans. */
+export async function setAutoScanEnabledAction(value: boolean): Promise<void> {
+  setSetting(AUTO_SCAN_ENABLED_KEY, value ? "true" : "false");
+  revalidatePath("/admin");
+}
+
+/** List library rows whose file is missing from disk (on-demand; stats each file). */
+export async function findBrokenLinksAction(): Promise<BrokenLink[]> {
+  return findBrokenLinks();
+}
+
+/** Delete the selected broken rows (re-verifies each file is still missing first). */
+export async function removeBrokenLinksAction(
+  items: { kind: "movie" | "episode"; id: number }[],
+): Promise<RemovalSummary> {
+  const summary = removeBrokenLinks(items);
+  revalidatePath("/admin");
+  return summary;
 }

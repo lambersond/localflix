@@ -1,3 +1,4 @@
+import { getAutoScanEnabled } from "@/db/queries";
 import { setNextScanAt } from "@/lib/job-state";
 import { triggerScan } from "@/lib/jobs";
 
@@ -5,7 +6,18 @@ import { triggerScan } from "@/lib/jobs";
  * Daily scan scheduler, pinned to globalThis so a dev hot-reload doesn't stack
  * multiple timers. Fires once per day at `SCAN_AT_HOUR` (local time, default 3).
  * Set `SCAN_AT_HOUR=off` to disable; `SCAN_ON_STARTUP=true` to also scan on boot.
+ *
+ * The `SCAN_AT_HOUR` env var sets *when* the timer fires; the "auto scan enabled"
+ * admin setting gates *whether* a fire actually runs a scan. The setting is read
+ * at fire time, so toggling it from /admin takes effect with no restart.
  */
+function runScheduledScan(label: string): void {
+  if (!getAutoScanEnabled()) {
+    console.log(`[scheduler] ${label} skipped (automatic scans disabled).`);
+    return;
+  }
+  console.log(`[scheduler] ${triggerScan().message}`);
+}
 const globalForSched = globalThis as unknown as {
   __mediaSchedulerStarted?: boolean;
 };
@@ -36,7 +48,7 @@ export function startScheduler(): void {
         setNextScanAt(at);
         console.log(`[scheduler] next scan at ${new Date(at).toLocaleString()}`);
         const timer = setTimeout(() => {
-          console.log(`[scheduler] ${triggerScan().message}`);
+          runScheduledScan("daily scan");
           schedule(); // recompute next run (survives DST shifts)
         }, delay);
         timer.unref();
@@ -46,6 +58,6 @@ export function startScheduler(): void {
   }
 
   if (process.env.SCAN_ON_STARTUP === "true") {
-    console.log(`[scheduler] startup scan: ${triggerScan().message}`);
+    runScheduledScan("startup scan");
   }
 }

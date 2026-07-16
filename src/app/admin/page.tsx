@@ -1,8 +1,10 @@
 import { db } from "@/db";
 import {
+  getAutoScanEnabled,
   getCacheArtworkOnScan,
   getIncludeNonPlayable,
   getLastRun,
+  getLibraryFileCount,
   getNonPlayableCount,
 } from "@/db/queries";
 import { countArtwork } from "@/lib/images";
@@ -14,6 +16,7 @@ export const dynamic = "force-dynamic";
 
 export default function AdminPage() {
   const job = currentJob();
+  const autoScanEnabled = getAutoScanEnabled();
   const initial: AdminStatus = {
     current: job ? { ...job, log: job.log.slice(-40) } : null,
     lastScan: getLastRun("scan"),
@@ -23,7 +26,9 @@ export default function AdminPage() {
     includeNonPlayable: getIncludeNonPlayable(),
     artwork: countArtwork(db),
     cacheArtworkOnScan: getCacheArtworkOnScan(),
-    nextScanAt: nextScanAt(),
+    autoScanEnabled,
+    libraryTotal: getLibraryFileCount(),
+    nextScanAt: autoScanEnabled ? nextScanAt() : null,
   };
 
   return (

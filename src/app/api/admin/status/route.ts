@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 
 import {
+  getAutoScanEnabled,
   getCacheArtworkOnScan,
   getIncludeNonPlayable,
   getLastRun,
+  getLibraryFileCount,
   getNonPlayableCount,
 } from "@/db/queries";
 import { db } from "@/db";
@@ -16,6 +18,7 @@ export const dynamic = "force-dynamic";
 /** Live admin status for the polling panel. */
 export async function GET() {
   const job = currentJob();
+  const autoScanEnabled = getAutoScanEnabled();
   return NextResponse.json({
     current: job ? { ...job, log: job.log.slice(-40) } : null,
     lastScan: getLastRun("scan"),
@@ -25,6 +28,9 @@ export async function GET() {
     includeNonPlayable: getIncludeNonPlayable(),
     artwork: countArtwork(db),
     cacheArtworkOnScan: getCacheArtworkOnScan(),
-    nextScanAt: nextScanAt(),
+    autoScanEnabled,
+    libraryTotal: getLibraryFileCount(),
+    // A disabled toggle means no scan will fire, so surface no "next" time.
+    nextScanAt: autoScanEnabled ? nextScanAt() : null,
   });
 }

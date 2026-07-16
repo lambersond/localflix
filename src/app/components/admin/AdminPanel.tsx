@@ -3,12 +3,20 @@
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 
 import {
+  findBrokenLinksAction,
+  removeBrokenLinksAction,
+  setAutoScanEnabledAction,
   setCacheArtworkOnScanAction,
   setIncludeNonPlayableAction,
   triggerArtworkAction,
   triggerScanAction,
   triggerTranscodeAction,
 } from "@/app/actions/admin";
+import type { BrokenLink } from "@/db/queries";
+
+const BUTTON_CLASS =
+  "rounded bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent/80 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50";
+const CHECKBOX_LABEL_CLASS = "flex items-center gap-2 text-sm text-muted cursor-pointer";
 
 interface JobRunRow {
   id: number;
@@ -37,6 +45,8 @@ export interface AdminStatus {
   includeNonPlayable: boolean;
   artwork: { referenced: number; cached: number };
   cacheArtworkOnScan: boolean;
+  autoScanEnabled: boolean;
+  libraryTotal: number;
   nextScanAt: number | null;
 }
 
@@ -75,6 +85,11 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
   const [message, setMessage] = useState<string | null>(null);
   const [deleteOriginals, setDeleteOriginals] = useState(false);
   const logRef = useRef<HTMLPreElement>(null);
+
+  // Broken-links review flow: null = not yet checked, [] = checked & all present.
+  const [broken, setBroken] = useState<BrokenLink[] | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const brokenKey = (b: BrokenLink) => `${b.kind}-${b.id}`;
 
   const refresh = useCallback(async () => {
     try {
@@ -121,6 +136,64 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
     });
   }
 
+  function onToggleAutoScan(value: boolean) {
+    setStatus((s) => ({ ...s, autoScanEnabled: value })); // optimistic
+    startTransition(async () => {
+      await setAutoScanEnabledAction(value);
+      await refresh();
+    });
+  }
+
+  function onFindBroken() {
+    startTransition(async () => {
+      const found = await findBrokenLinksAction();
+      setBroken(found);
+      setSelected(new Set(found.map(brokenKey))); // default: all selected
+    });
+  }
+
+  function toggleOne(key: string, checked: boolean) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }
+
+  function toggleAll(checked: boolean) {
+    setSelected(checked && broken ? new Set(broken.map(brokenKey)) : new Set());
+  }
+
+  function onRemoveSelected() {
+    if (!broken) return;
+    const items = broken
+      .filter((b) => selected.has(brokenKey(b)))
+      .map((b) => ({ kind: b.kind, id: b.id }));
+    if (items.length === 0) return;
+    if (!window.confirm(`Remove ${items.length} selected item(s)? This can't be undone.`)) {
+      return;
+    }
+    startTransition(async () => {
+      const r = await removeBrokenLinksAction(items);
+      const parts = [
+        r.removedMovies > 0 ? `${r.removedMovies} movie(s)` : null,
+        r.removedEpisodes > 0 ? `${r.removedEpisodes} episode(s)` : null,
+        r.prunedShows > 0 ? `${r.prunedShows} empty show(s)` : null,
+        r.prunedSeasons > 0 ? `${r.prunedSeasons} empty season(s)` : null,
+      ].filter(Boolean);
+      const removed = parts.length > 0 ? `Removed ${parts.join(", ")}.` : "Nothing removed.";
+      const skipped =
+        r.skippedReappeared > 0
+          ? ` ${r.skippedReappeared} item(s) skipped — their file reappeared.`
+          : "";
+      setMessage(removed + skipped);
+      setBroken(null);
+      setSelected(new Set());
+      await refresh();
+    });
+  }
+
   return (
     <div className="flex flex-col gap-6">
       {message && (
@@ -134,12 +207,21 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
         <p className="text-sm text-muted">
           Next scheduled scan: {status.nextScanAt ? fmt(status.nextScanAt) : "disabled"}
         </p>
+        <label className={CHECKBOX_LABEL_CLASS}>
+          <input
+            type="checkbox"
+            className="cursor-pointer"
+            checked={status.autoScanEnabled}
+            onChange={(e) => onToggleAutoScan(e.target.checked)}
+          />
+          Run automatic daily scans
+        </label>
         <div>
           <button
             type="button"
             disabled={pending || running}
             onClick={() => run(triggerScanAction)}
-            className="rounded bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent/80 disabled:opacity-50"
+            className={BUTTON_CLASS}
           >
             Scan now
           </button>
@@ -155,9 +237,10 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
             : `${status.nonPlayable} file(s) need converting to MP4.`}
         </p>
         <LastRun label="Last convert" run={status.lastTranscode} />
-        <label className="flex items-center gap-2 text-sm text-muted">
+        <label className={CHECKBOX_LABEL_CLASS}>
           <input
             type="checkbox"
+            className="cursor-pointer"
             checked={deleteOriginals}
             onChange={(e) => setDeleteOriginals(e.target.checked)}
           />
@@ -168,7 +251,7 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
             type="button"
             disabled={pending || running || status.nonPlayable === 0}
             onClick={() => run(() => triggerTranscodeAction(deleteOriginals))}
-            className="rounded bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent/80 disabled:opacity-50"
+            className={BUTTON_CLASS}
           >
             Convert all
           </button>
@@ -184,9 +267,10 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
             : `${status.artwork.cached} / ${status.artwork.referenced} artwork file(s) cached locally.`}
         </p>
         <LastRun label="Last cache" run={status.lastArtwork} />
-        <label className="flex items-center gap-2 text-sm text-muted">
+        <label className={CHECKBOX_LABEL_CLASS}>
           <input
             type="checkbox"
+            className="cursor-pointer"
             checked={status.cacheArtworkOnScan}
             onChange={(e) => onToggleArtwork(e.target.checked)}
           />
@@ -197,7 +281,7 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
             type="button"
             disabled={pending || running || status.artwork.cached >= status.artwork.referenced}
             onClick={() => run(triggerArtworkAction)}
-            className="rounded bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent/80 disabled:opacity-50"
+            className={BUTTON_CLASS}
           >
             Cache artwork now
           </button>
@@ -207,9 +291,10 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
       {/* Settings */}
       <section className="flex flex-col gap-3 rounded-lg bg-surface/50 p-5">
         <h2 className="text-lg font-semibold">Settings</h2>
-        <label className="flex items-center gap-3 text-sm">
+        <label className="flex items-center gap-3 text-sm cursor-pointer">
           <input
             type="checkbox"
+            className="cursor-pointer"
             checked={status.includeNonPlayable}
             onChange={(e) => onToggleInclude(e.target.checked)}
           />
@@ -220,6 +305,94 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
             </span>
           </span>
         </label>
+      </section>
+
+      {/* Broken media links */}
+      <section className="flex flex-col gap-3 rounded-lg bg-surface/50 p-5">
+        <h2 className="text-lg font-semibold">Broken media links</h2>
+        <p className="text-sm text-muted">
+          Find library entries whose file is missing from disk, then remove the ones you choose.
+        </p>
+        <div>
+          <button
+            type="button"
+            disabled={pending || running}
+            onClick={onFindBroken}
+            className={BUTTON_CLASS}
+          >
+            Find broken links
+          </button>
+        </div>
+
+        {broken !== null && broken.length === 0 && (
+          <p className="text-sm text-green-400">No broken links — every file is present.</p>
+        )}
+
+        {broken !== null && broken.length > 0 && (
+          <div className="flex flex-col gap-3">
+            {status.libraryTotal > 0 && broken.length >= status.libraryTotal && (
+              <p className="rounded bg-yellow-500/10 px-3 py-2 text-sm text-yellow-400">
+                Every library file is unreachable — is the media share mounted? Removing now would
+                clear the whole library.
+              </p>
+            )}
+
+            <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
+              <input
+                type="checkbox"
+                className="cursor-pointer"
+                checked={selected.size === broken.length}
+                onChange={(e) => toggleAll(e.target.checked)}
+              />
+              Select all ({broken.length})
+            </label>
+
+            <ul className="flex flex-col divide-y divide-white/10 overflow-hidden rounded bg-black/30">
+              {broken.map((b) => {
+                const key = brokenKey(b);
+                return (
+                  <li key={key}>
+                    <label className="flex cursor-pointer items-start gap-3 p-3 transition hover:bg-white/5">
+                      <input
+                        type="checkbox"
+                        className="mt-1 cursor-pointer"
+                        checked={selected.has(key)}
+                        onChange={(e) => toggleOne(key, e.target.checked)}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-2">
+                          <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
+                            {b.kind}
+                          </span>
+                          <span className="truncate text-sm font-medium text-foreground">
+                            {b.title}
+                          </span>
+                        </span>
+                        {b.subtitle && (
+                          <span className="block text-xs text-muted">{b.subtitle}</span>
+                        )}
+                        <span className="block truncate font-mono text-[11px] text-muted/70">
+                          {b.filePath}
+                        </span>
+                      </span>
+                    </label>
+                  </li>
+                );
+              })}
+            </ul>
+
+            <div>
+              <button
+                type="button"
+                disabled={pending || running || selected.size === 0}
+                onClick={onRemoveSelected}
+                className={BUTTON_CLASS}
+              >
+                Remove selected ({selected.size})
+              </button>
+            </div>
+          </div>
+        )}
       </section>
 
       {/* Live job status */}

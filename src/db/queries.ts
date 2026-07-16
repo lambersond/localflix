@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+
 import { and, asc, desc, eq, gt, gte, inArray, or, sql } from "drizzle-orm";
 
 import {
@@ -1366,11 +1368,214 @@ export function getCacheArtworkOnScan(): boolean {
   return getSetting(CACHE_ARTWORK_ON_SCAN_KEY, "true") !== "false";
 }
 
+export const AUTO_SCAN_ENABLED_KEY = "auto_scan_enabled";
+
+/** Whether the scheduler runs automatic (daily / on-startup) scans (default true). */
+export function getAutoScanEnabled(): boolean {
+  return getSetting(AUTO_SCAN_ENABLED_KEY, "true") !== "false";
+}
+
 /** Count library files (movies + episodes) that aren't browser-playable. */
 export function getNonPlayableCount(): number {
   const movieFiles = db.select({ filePath: movies.filePath }).from(movies).all();
   const episodeFiles = db.select({ filePath: episodes.filePath }).from(episodes).all();
   return [...movieFiles, ...episodeFiles].filter((r) => !isBrowserPlayable(r.filePath)).length;
+}
+
+// ── Admin: broken media links ────────────────────────────────────────────────
+
+/** Total playable files in the library (movies + episodes). */
+export function getLibraryFileCount(): number {
+  const m = db.select({ n: sql<number>`count(*)` }).from(movies).get()?.n ?? 0;
+  const e = db.select({ n: sql<number>`count(*)` }).from(episodes).get()?.n ?? 0;
+  return m + e;
+}
+
+export interface BrokenLink {
+  kind: "movie" | "episode";
+  id: number;
+  /** Movie title, or the show name for an episode. */
+  title: string;
+  /** For episodes, e.g. "S01E04 — Safe"; null for movies. */
+  subtitle: string | null;
+  filePath: string;
+}
+
+/**
+ * Library rows whose file is gone from disk. Scans keep such rows on purpose (a
+ * NAS may be briefly unmounted), so they accumulate; this surfaces them for the
+ * operator to review before deleting. Runs a `statSync` per file, so it is
+ * on-demand only — never on the status poll.
+ */
+export function findBrokenLinks(): BrokenLink[] {
+  const broken: BrokenLink[] = [];
+
+  const movieRows = db
+    .select({ id: movies.id, title: movies.title, filePath: movies.filePath })
+    .from(movies)
+    .all();
+  for (const m of movieRows) {
+    if (!existsSync(m.filePath)) {
+      broken.push({ kind: "movie", id: m.id, title: m.title, subtitle: null, filePath: m.filePath });
+    }
+  }
+
+  const episodeRows = db
+    .select({
+      id: episodes.id,
+      filePath: episodes.filePath,
+      episodeNumber: episodes.tmdbEpisodeNumber,
+      episodeName: episodes.name,
+      seasonNumber: seasons.tmdbSeasonNumber,
+      showName: shows.name,
+    })
+    .from(episodes)
+    .innerJoin(seasons, eq(episodes.seasonId, seasons.id))
+    .innerJoin(shows, eq(seasons.showId, shows.id))
+    .all();
+  for (const e of episodeRows) {
+    if (!existsSync(e.filePath)) {
+      const code = `S${String(e.seasonNumber).padStart(2, "0")}E${String(e.episodeNumber).padStart(2, "0")}`;
+      broken.push({
+        kind: "episode",
+        id: e.id,
+        title: e.showName,
+        subtitle: e.episodeName ? `${code} — ${e.episodeName}` : code,
+        filePath: e.filePath,
+      });
+    }
+  }
+
+  return broken;
+}
+
+export interface RemovalSummary {
+  removedMovies: number;
+  removedEpisodes: number;
+  prunedSeasons: number;
+  prunedShows: number;
+  /** Selected items whose file reappeared before delete — skipped, not removed. */
+  skippedReappeared: number;
+}
+
+/**
+ * Delete the selected broken rows and everything orphaned by them. Re-verifies
+ * each file is still missing first, so a share that comes back between "find"
+ * and "remove" cancels the delete for those items.
+ *
+ * The polymorphic tables (`videos`, `watchlist`, `watchProgress`,
+ * `collectionItems`) have no FK to media rows, so they're cleaned by hand; the
+ * `*Genres`/`*Keywords`/`*Cast` join tables cascade via `foreign_keys = ON`.
+ */
+export function removeBrokenLinks(
+  items: { kind: "movie" | "episode"; id: number }[],
+): RemovalSummary {
+  const summary: RemovalSummary = {
+    removedMovies: 0,
+    removedEpisodes: 0,
+    prunedSeasons: 0,
+    prunedShows: 0,
+    skippedReappeared: 0,
+  };
+  if (items.length === 0) return summary;
+
+  db.transaction((tx) => {
+    const showsToCheck = new Set<number>();
+
+    for (const item of items) {
+      if (item.kind === "movie") {
+        const m = tx
+          .select({ filePath: movies.filePath })
+          .from(movies)
+          .where(eq(movies.id, item.id))
+          .get();
+        if (!m) continue;
+        if (existsSync(m.filePath)) {
+          summary.skippedReappeared++;
+          continue;
+        }
+        tx.delete(videos)
+          .where(and(eq(videos.mediaType, "movie"), eq(videos.mediaId, item.id)))
+          .run();
+        tx.delete(watchlist)
+          .where(and(eq(watchlist.mediaType, "movie"), eq(watchlist.mediaId, item.id)))
+          .run();
+        tx.delete(watchProgress)
+          .where(and(eq(watchProgress.playableKind, "movie"), eq(watchProgress.playableId, item.id)))
+          .run();
+        tx.delete(collectionItems)
+          .where(and(eq(collectionItems.mediaType, "movie"), eq(collectionItems.mediaId, item.id)))
+          .run();
+        tx.delete(movies).where(eq(movies.id, item.id)).run();
+        tx.run(sql`DELETE FROM search_index WHERE kind = ${"movie"} AND media_id = ${item.id}`);
+        summary.removedMovies++;
+      } else {
+        const e = tx
+          .select({ filePath: episodes.filePath, seasonId: episodes.seasonId })
+          .from(episodes)
+          .where(eq(episodes.id, item.id))
+          .get();
+        if (!e) continue;
+        if (existsSync(e.filePath)) {
+          summary.skippedReappeared++;
+          continue;
+        }
+        tx.delete(watchProgress)
+          .where(and(eq(watchProgress.playableKind, "episode"), eq(watchProgress.playableId, item.id)))
+          .run();
+        tx.delete(episodes).where(eq(episodes.id, item.id)).run();
+        summary.removedEpisodes++;
+        const season = tx
+          .select({ showId: seasons.showId })
+          .from(seasons)
+          .where(eq(seasons.id, e.seasonId))
+          .get();
+        if (season) showsToCheck.add(season.showId);
+      }
+    }
+
+    // Prune seasons left with no episodes, then shows left with no seasons.
+    for (const showId of showsToCheck) {
+      const seasonRows = tx
+        .select({ id: seasons.id })
+        .from(seasons)
+        .where(eq(seasons.showId, showId))
+        .all();
+      for (const season of seasonRows) {
+        const remaining = tx
+          .select({ id: episodes.id })
+          .from(episodes)
+          .where(eq(episodes.seasonId, season.id))
+          .all();
+        if (remaining.length === 0) {
+          tx.delete(seasons).where(eq(seasons.id, season.id)).run();
+          summary.prunedSeasons++;
+        }
+      }
+
+      const remainingSeasons = tx
+        .select({ id: seasons.id })
+        .from(seasons)
+        .where(eq(seasons.showId, showId))
+        .all();
+      if (remainingSeasons.length === 0) {
+        tx.delete(videos)
+          .where(and(eq(videos.mediaType, "show"), eq(videos.mediaId, showId)))
+          .run();
+        tx.delete(watchlist)
+          .where(and(eq(watchlist.mediaType, "show"), eq(watchlist.mediaId, showId)))
+          .run();
+        tx.delete(collectionItems)
+          .where(and(eq(collectionItems.mediaType, "show"), eq(collectionItems.mediaId, showId)))
+          .run();
+        tx.delete(shows).where(eq(shows.id, showId)).run();
+        tx.run(sql`DELETE FROM search_index WHERE kind = ${"show"} AND media_id = ${showId}`);
+        summary.prunedShows++;
+      }
+    }
+  });
+
+  return summary;
 }
 
 /** Most recent run record for a job kind, or null. */
