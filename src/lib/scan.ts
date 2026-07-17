@@ -236,6 +236,37 @@ export function createScanner(db: DB, log: Logger) {
     }
   }
 
+  /**
+   * Fetch a movie from TMDB by id and (re)write its row + related data for the
+   * given file. The core of the movie scan path, split out so the admin
+   * re-tag / assign tools can drive it for one operator-chosen title.
+   */
+  async function ingestMovieByTmdbId(
+    tmdbId: number,
+    filePath: string,
+  ): Promise<{ id: number; title: string; releaseDate: string | null }> {
+    const d = await getMovieDetails(tmdbId);
+    const id = upsertMovie({
+      tmdbId: d.id,
+      title: d.title,
+      overview: d.overview,
+      posterPath: d.poster_path,
+      backdropPath: d.backdrop_path,
+      releaseDate: d.release_date,
+      runtimeMinutes: d.runtime,
+      certification: await getMovieCertification(d.id),
+      voteAverage: d.vote_average,
+      voteCount: d.vote_count,
+      tmdbCollectionId: d.belongs_to_collection?.id ?? null,
+      genres: d.genres,
+      keywords: keywordsOf(d),
+      videos: await filterAvailableVideos(videosOf(d), log),
+      filePath,
+    });
+    await ingestMovieCast(id, d.id);
+    return { id, title: d.title, releaseDate: d.release_date };
+  }
+
   async function ingestShowCast(showId: number, tmdbShowId: number) {
     const cast = (await getShowCast(tmdbShowId)).slice(0, TOP_CAST);
     db.delete(schema.showCast).where(eq(schema.showCast.showId, showId)).run();
@@ -538,31 +569,13 @@ export function createScanner(db: DB, log: Logger) {
           continue;
         }
 
-        const d = await getMovieDetails(tmdbId);
-        const id = upsertMovie({
-          tmdbId: d.id,
-          title: d.title,
-          overview: d.overview,
-          posterPath: d.poster_path,
-          backdropPath: d.backdrop_path,
-          releaseDate: d.release_date,
-          runtimeMinutes: d.runtime,
-          certification: await getMovieCertification(d.id),
-          voteAverage: d.vote_average,
-          voteCount: d.vote_count,
-          tmdbCollectionId: d.belongs_to_collection?.id ?? null,
-          genres: d.genres,
-          keywords: keywordsOf(d),
-          videos: await filterAvailableVideos(videosOf(d), log),
-          filePath: file,
-        });
-        await ingestMovieCast(id, d.id);
-        const yr = d.release_date ? ` (${d.release_date.slice(0, 4)})` : "";
-        log(`  ✓ ${d.title}${yr} -> ${basename(file)} (id ${id})`);
+        const info = await ingestMovieByTmdbId(tmdbId, file);
+        const yr = info.releaseDate ? ` (${info.releaseDate.slice(0, 4)})` : "";
+        log(`  ✓ ${info.title}${yr} -> ${basename(file)} (id ${info.id})`);
         imported++;
-        if (!seen.has(d.id)) {
-          seen.add(d.id);
-          matched.push(d.id);
+        if (!seen.has(tmdbId)) {
+          seen.add(tmdbId);
+          matched.push(tmdbId);
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -701,5 +714,13 @@ export function createScanner(db: DB, log: Logger) {
     return { movies, shows, skipped: 0 };
   }
 
-  return { upsertMovie, ingestMovieCast, ingestShow, buildCollections, runScan };
+  return {
+    upsertMovie,
+    ingestMovieCast,
+    ingestMovieByTmdbId,
+    ingestShow,
+    buildCollections,
+    rebuildRowFromDb,
+    runScan,
+  };
 }

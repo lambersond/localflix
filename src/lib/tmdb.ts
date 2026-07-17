@@ -85,10 +85,27 @@ export interface TmdbSeasonDetails {
 
 interface TmdbSearchResult {
   id: number;
+  title?: string; // movies
+  name?: string; // TV
+  release_date?: string | null;
+  first_air_date?: string | null;
+  overview?: string | null;
+  poster_path?: string | null;
+  vote_average?: number | null;
 }
 
 interface TmdbSearchResponse {
   results: TmdbSearchResult[];
+}
+
+/** A single search hit, enough to render a picker row and choose a match. */
+export interface TmdbSearchHit {
+  id: number;
+  title: string;
+  year: string | null;
+  overview: string | null;
+  posterPath: string | null;
+  voteAverage: number | null;
 }
 
 export interface TmdbCastMember {
@@ -125,23 +142,67 @@ async function tmdbFetch<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export async function searchMovie(
-  query: string,
-  year?: number,
-): Promise<number | null> {
-  const params = new URLSearchParams({ query });
-  if (year) params.set("year", String(year));
-  const data = await tmdbFetch<TmdbSearchResponse>(
-    `/search/movie?${params.toString()}`,
-  );
-  return data.results[0]?.id ?? null;
+const MAX_SEARCH_HITS = 10;
+
+function toHit(r: TmdbSearchResult): TmdbSearchHit {
+  const date = r.release_date ?? r.first_air_date ?? null;
+  return {
+    id: r.id,
+    title: r.title ?? r.name ?? "(untitled)",
+    year: date ? date.slice(0, 4) : null,
+    overview: r.overview ?? null,
+    posterPath: r.poster_path ?? null,
+    voteAverage: r.vote_average ?? null,
+  };
 }
 
-export async function searchTv(query: string): Promise<number | null> {
+/** Top movie hits with the fields a picker needs (title, year, poster, overview). */
+export async function searchMovies(query: string, year?: number): Promise<TmdbSearchHit[]> {
+  const params = new URLSearchParams({ query });
+  if (year) params.set("year", String(year));
+  const data = await tmdbFetch<TmdbSearchResponse>(`/search/movie?${params.toString()}`);
+  return data.results.slice(0, MAX_SEARCH_HITS).map(toHit);
+}
+
+/** Top TV hits with the fields a picker needs. */
+export async function searchShows(query: string): Promise<TmdbSearchHit[]> {
   const data = await tmdbFetch<TmdbSearchResponse>(
     `/search/tv?query=${encodeURIComponent(query)}`,
   );
-  return data.results[0]?.id ?? null;
+  return data.results.slice(0, MAX_SEARCH_HITS).map(toHit);
+}
+
+/** Best-match movie id (the scan's non-interactive path). */
+export async function searchMovie(query: string, year?: number): Promise<number | null> {
+  return (await searchMovies(query, year))[0]?.id ?? null;
+}
+
+/** Best-match TV id (the scan's non-interactive path). */
+export async function searchTv(query: string): Promise<number | null> {
+  return (await searchShows(query))[0]?.id ?? null;
+}
+
+/** Map a details response to a one-row hit (for a pasted TMDB id / URL). */
+export function movieDetailsToHit(d: TmdbMovieDetails): TmdbSearchHit {
+  return {
+    id: d.id,
+    title: d.title,
+    year: d.release_date ? d.release_date.slice(0, 4) : null,
+    overview: d.overview,
+    posterPath: d.poster_path,
+    voteAverage: d.vote_average,
+  };
+}
+
+export function showDetailsToHit(d: TmdbShowDetails): TmdbSearchHit {
+  return {
+    id: d.id,
+    title: d.name,
+    year: d.first_air_date ? d.first_air_date.slice(0, 4) : null,
+    overview: d.overview,
+    posterPath: d.poster_path,
+    voteAverage: d.vote_average,
+  };
 }
 
 export function getMovieDetails(tmdbId: number): Promise<TmdbMovieDetails> {

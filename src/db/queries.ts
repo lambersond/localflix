@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 
-import { and, asc, desc, eq, gt, gte, inArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, like, or, sql } from "drizzle-orm";
 
 import {
   formatRuntime,
@@ -1447,6 +1447,76 @@ export function findBrokenLinks(): BrokenLink[] {
   }
 
   return broken;
+}
+
+export interface LibraryMatch {
+  kind: "movie" | "show";
+  id: number;
+  title: string;
+  year: string | null;
+  posterPath: string | null;
+  /** The movie's file (shows span many files, so null). */
+  filePath: string | null;
+}
+
+/**
+ * Tracked movies/shows whose title matches `q` — lets the operator locate a
+ * mis-matched record to re-tag. Case-insensitive substring, capped for the panel.
+ */
+export function searchLibraryTitles(q: string): LibraryMatch[] {
+  const term = q.trim();
+  if (!term) return [];
+  const pattern = `%${term}%`;
+
+  const movieRows = db
+    .select({
+      id: movies.id,
+      title: movies.title,
+      releaseDate: movies.releaseDate,
+      posterPath: movies.posterPath,
+      filePath: movies.filePath,
+    })
+    .from(movies)
+    .where(like(movies.title, pattern))
+    .orderBy(asc(movies.title))
+    .limit(20)
+    .all();
+
+  const showRows = db
+    .select({
+      id: shows.id,
+      name: shows.name,
+      firstAirDate: shows.firstAirDate,
+      posterPath: shows.posterPath,
+    })
+    .from(shows)
+    .where(like(shows.name, pattern))
+    .orderBy(asc(shows.name))
+    .limit(20)
+    .all();
+
+  const results: LibraryMatch[] = [];
+  for (const m of movieRows) {
+    results.push({
+      kind: "movie",
+      id: m.id,
+      title: m.title,
+      year: m.releaseDate ? m.releaseDate.slice(0, 4) : null,
+      posterPath: m.posterPath,
+      filePath: m.filePath,
+    });
+  }
+  for (const s of showRows) {
+    results.push({
+      kind: "show",
+      id: s.id,
+      title: s.name,
+      year: s.firstAirDate ? s.firstAirDate.slice(0, 4) : null,
+      posterPath: s.posterPath,
+      filePath: null,
+    });
+  }
+  return results.slice(0, 20);
 }
 
 export interface RemovalSummary {

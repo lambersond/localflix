@@ -1,11 +1,15 @@
 "use client";
 
+import Image from "next/image";
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 
 import {
+  assignUntrackedMatchAction,
   findBrokenLinksAction,
   findUntrackedFilesAction,
+  rematchTitleAction,
   removeBrokenLinksAction,
+  searchLibraryTitlesAction,
   setAutoScanEnabledAction,
   setCacheArtworkOnScanAction,
   setIncludeNonPlayableAction,
@@ -13,8 +17,11 @@ import {
   triggerScanAction,
   triggerTranscodeAction,
 } from "@/app/actions/admin";
-import type { BrokenLink } from "@/db/queries";
-import type { UntrackedReason, UntrackedResult } from "@/lib/untracked";
+import type { BrokenLink, LibraryMatch } from "@/db/queries";
+import { tmdbImage } from "@/lib/tmdb-image";
+import type { UntrackedFile, UntrackedReason, UntrackedResult } from "@/lib/untracked";
+
+import TmdbMatchPicker from "./TmdbMatchPicker";
 
 const UNTRACKED_LABEL: Record<UntrackedReason, string> = {
   "no-match": "No match",
@@ -24,7 +31,36 @@ const UNTRACKED_LABEL: Record<UntrackedReason, string> = {
 
 const BUTTON_CLASS =
   "rounded bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent/80 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50";
+const SECONDARY_BUTTON_CLASS =
+  "shrink-0 rounded px-2 py-1 text-xs font-medium text-muted ring-1 ring-white/20 transition hover:bg-white/5 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50";
+const INPUT_CLASS =
+  "w-full min-w-0 rounded bg-black/40 px-3 py-2 text-sm outline-none ring-1 ring-white/15 focus:ring-white/40";
 const CHECKBOX_LABEL_CLASS = "flex items-center gap-2 text-sm text-muted cursor-pointer";
+const CHIP_CLASS =
+  "shrink-0 rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted";
+
+/** Seed the TMDB search box from a file/folder name (client-side, best-effort). */
+function fileStem(path: string): string {
+  const base = path.split(/[/\\]/).pop() ?? path;
+  return base
+    .replace(/\.[^.]+$/, "")
+    .replace(/[._]+/g, " ")
+    .trim();
+}
+
+/** A movie title guess: the stem cut before the first release year (unless it leads). */
+function movieGuess(path: string): string {
+  const stem = fileStem(path);
+  const m = /\b(?:19|20)\d{2}\b/.exec(stem);
+  return (m && m.index > 0 ? stem.slice(0, m.index) : stem).trim();
+}
+
+/** A show name guess: the folder directly under shows/ or tv/. */
+function showGuess(path: string): string {
+  const parts = path.split(/[/\\]/);
+  const i = parts.findIndex((p) => p.toLowerCase() === "shows" || p.toLowerCase() === "tv");
+  return i >= 0 && parts[i + 1] ? parts[i + 1] : fileStem(path);
+}
 
 interface JobRunRow {
   id: number;
@@ -209,6 +245,62 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
       setBroken(null);
       setSelected(new Set());
       await refresh();
+    });
+  }
+
+  // Manual TMDB re-matching (untracked "assign" + tracked "re-match").
+  const [applying, setApplying] = useState(false);
+  const [matchPath, setMatchPath] = useState<string | null>(null); // open untracked picker
+  const [libQuery, setLibQuery] = useState("");
+  const [libResults, setLibResults] = useState<LibraryMatch[] | null>(null);
+  const [libSearching, startLibSearch] = useTransition();
+  const [fixKey, setFixKey] = useState<string | null>(null); // open library-row picker
+  const libKey = (m: LibraryMatch) => `${m.kind}-${m.id}`;
+
+  function onAssignUntracked(file: UntrackedFile, tmdbId: number) {
+    setApplying(true);
+    startTransition(async () => {
+      const res = await assignUntrackedMatchAction({
+        path: file.path,
+        area: file.area,
+        tmdbId,
+      });
+      setApplying(false);
+      setMessage(res.message);
+      if (res.ok) {
+        setMatchPath(null);
+        setUntracked(await findUntrackedFilesAction()); // drop the now-tracked file
+        await refresh();
+      }
+    });
+  }
+
+  function onSearchLibrary(event: React.FormEvent) {
+    event.preventDefault();
+    if (!libQuery.trim()) return;
+    startLibSearch(async () => {
+      setLibResults(await searchLibraryTitlesAction(libQuery));
+    });
+  }
+
+  function onRematch(match: LibraryMatch, tmdbId: number, label: string) {
+    if (
+      !window.confirm(
+        `Replace metadata for "${match.title}" with "${label}"? This removes the current record — including watch progress — and re-imports as the chosen title.`,
+      )
+    ) {
+      return;
+    }
+    setApplying(true);
+    startTransition(async () => {
+      const res = await rematchTitleAction({ kind: match.kind, id: match.id, tmdbId });
+      setApplying(false);
+      setMessage(res.message);
+      if (res.ok) {
+        setFixKey(null);
+        setLibResults(await searchLibraryTitlesAction(libQuery)); // reflect the new title
+        await refresh();
+      }
     });
   }
 
@@ -458,17 +550,114 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
             </p>
             <ul className="flex max-h-96 flex-col divide-y divide-white/10 overflow-auto rounded bg-black/30">
               {untracked.files.map((u) => (
-                <li key={u.path} className="flex items-start gap-3 p-3">
-                  <span className="shrink-0 rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
-                    {UNTRACKED_LABEL[u.reason]}
-                  </span>
-                  <span className="min-w-0 flex-1 break-all font-mono text-[11px] text-foreground/80">
-                    {u.path}
-                  </span>
+                <li key={u.path} className="flex flex-col gap-2 p-3">
+                  <div className="flex items-start gap-3">
+                    <span className={CHIP_CLASS}>{UNTRACKED_LABEL[u.reason]}</span>
+                    <span className="min-w-0 flex-1 break-all font-mono text-[11px] text-foreground/80">
+                      {u.path}
+                    </span>
+                    {u.reason === "no-match" && (
+                      <button
+                        type="button"
+                        className={SECONDARY_BUTTON_CLASS}
+                        disabled={applying}
+                        onClick={() => setMatchPath(matchPath === u.path ? null : u.path)}
+                      >
+                        {matchPath === u.path ? "Cancel" : "Find match"}
+                      </button>
+                    )}
+                  </div>
+                  {matchPath === u.path && (
+                    <TmdbMatchPicker
+                      kind={u.area}
+                      defaultQuery={u.area === "show" ? showGuess(u.path) : movieGuess(u.path)}
+                      applying={applying}
+                      onApply={(tmdbId) => onAssignUntracked(u, tmdbId)}
+                    />
+                  )}
                 </li>
               ))}
             </ul>
           </div>
+        )}
+      </section>
+
+      {/* Fix metadata (re-match a tracked title to the correct TMDB entry) */}
+      <section className="flex flex-col gap-3 rounded-lg bg-surface/50 p-5">
+        <h2 className="text-lg font-semibold">Fix metadata</h2>
+        <p className="text-sm text-muted">
+          Search your library for a title with the wrong metadata, then re-match it to the correct
+          TMDB entry.
+        </p>
+        <form onSubmit={onSearchLibrary} className="flex gap-2">
+          <input
+            className={INPUT_CLASS}
+            value={libQuery}
+            onChange={(e) => setLibQuery(e.target.value)}
+            placeholder="Search your library by title…"
+            aria-label="Library title search"
+          />
+          <button
+            type="submit"
+            className={BUTTON_CLASS}
+            disabled={libSearching || !libQuery.trim()}
+          >
+            {libSearching ? "Searching…" : "Search library"}
+          </button>
+        </form>
+
+        {libResults !== null && libResults.length === 0 && (
+          <p className="text-sm text-muted">No tracked titles match.</p>
+        )}
+
+        {libResults && libResults.length > 0 && (
+          <ul className="flex flex-col divide-y divide-white/10 overflow-hidden rounded bg-black/30">
+            {libResults.map((m) => {
+              const key = libKey(m);
+              const poster = tmdbImage(m.posterPath);
+              return (
+                <li key={key} className="flex flex-col gap-2 p-3">
+                  <div className="flex items-start gap-3">
+                    <div className="relative h-16 w-11 shrink-0 overflow-hidden rounded bg-white/10">
+                      {poster && (
+                        <Image src={poster} alt="" fill sizes="44px" className="object-cover" />
+                      )}
+                    </div>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-2">
+                        <span className={CHIP_CLASS}>{m.kind}</span>
+                        <span className="truncate text-sm font-medium text-foreground">
+                          {m.title}
+                          {m.year ? ` (${m.year})` : ""}
+                        </span>
+                      </span>
+                      {m.filePath && (
+                        <span className="mt-0.5 block truncate font-mono text-[11px] text-muted/70">
+                          {m.filePath}
+                        </span>
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      className={SECONDARY_BUTTON_CLASS}
+                      disabled={applying}
+                      onClick={() => setFixKey(fixKey === key ? null : key)}
+                    >
+                      {fixKey === key ? "Cancel" : "Re-match"}
+                    </button>
+                  </div>
+                  {fixKey === key && (
+                    <TmdbMatchPicker
+                      kind={m.kind}
+                      defaultQuery={m.title}
+                      applying={applying}
+                      onApply={(tmdbId, label) => onRematch(m, tmdbId, label)}
+                    />
+                  )}
+                </li>
+              );
+            })}
+          </ul>
         )}
       </section>
 
