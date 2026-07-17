@@ -1,6 +1,7 @@
-import { basename, join, relative, resolve, sep } from "node:path";
+import { statSync } from "node:fs";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 
 import { db } from "@/db";
 import * as schema from "@/db/schema";
@@ -11,6 +12,7 @@ import {
   SHOW_ROOT_NAMES,
   walkVideos,
 } from "./fs-scan";
+import { mimeTypeForFile, parseVersionLabel } from "./media";
 import { createScanner } from "./scan";
 import { reindexSearch } from "./search-index";
 import {
@@ -97,6 +99,9 @@ function deleteMovieById(id: number): void {
         ),
       )
       .run();
+    tx.delete(schema.mediaFiles)
+      .where(and(eq(schema.mediaFiles.mediaType, "movie"), eq(schema.mediaFiles.mediaId, id)))
+      .run();
     tx.delete(schema.movies).where(eq(schema.movies.id, id)).run();
     tx.run(sql`DELETE FROM search_index WHERE kind = ${"movie"} AND media_id = ${id}`);
   });
@@ -171,10 +176,12 @@ export async function assignUntrackedMatch(input: {
     if (input.area === "movie") {
       const existing = movieByTmdbId(input.tmdbId);
       if (existing) {
-        return {
-          ok: false,
-          message: `That TMDB title is already in your library as "${existing.title}" — fix that record instead.`,
-        };
+        // Already tracked → attach this file as another version of that movie
+        // (e.g. a second resolution or cut) rather than refusing.
+        const added = addMovieVersion({ movieId: existing.id, filePath: input.path, label: "" });
+        return added.ok
+          ? { ok: true, message: `Added as a version of "${existing.title}".` }
+          : added;
       }
       const info = await scanner.ingestMovieByTmdbId(input.tmdbId, input.path);
       scanner.rebuildRowFromDb("movie");
@@ -401,4 +408,160 @@ export async function matchMovieToTv(input: {
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
   }
+}
+
+// ── Movie file versions (multiple resolutions / cuts of one title) ──
+
+export interface VersionCandidate {
+  path: string;
+  suggestedLabel: string;
+}
+
+/** Absolute paths of every file already tracked anywhere in the library. */
+function allTrackedPaths(): Set<string> {
+  const set = new Set<string>();
+  for (const m of db.select({ filePath: schema.movies.filePath }).from(schema.movies).all()) {
+    set.add(resolve(m.filePath));
+  }
+  for (const e of db.select({ filePath: schema.episodes.filePath }).from(schema.episodes).all()) {
+    set.add(resolve(e.filePath));
+  }
+  for (const v of db.select({ filePath: schema.mediaFiles.filePath }).from(schema.mediaFiles).all()) {
+    set.add(resolve(v.filePath));
+  }
+  return set;
+}
+
+/** Untracked video files in a movie's folder — candidates to attach as versions. */
+export async function listMovieVersionCandidates(movieId: number): Promise<VersionCandidate[]> {
+  const movie = db
+    .select({ filePath: schema.movies.filePath })
+    .from(schema.movies)
+    .where(eq(schema.movies.id, movieId))
+    .get();
+  if (!movie) return [];
+  const tracked = allTrackedPaths();
+  const files = await walkVideos(dirname(movie.filePath));
+  return files
+    .filter((f) => !tracked.has(resolve(f)))
+    .map((f) => ({ path: f, suggestedLabel: parseVersionLabel(f) ?? "Alternate" }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/** Attach a file as an additional version of a movie. */
+export function addMovieVersion(input: {
+  movieId: number;
+  filePath: string;
+  label: string;
+}): RetagResult {
+  const movie = db
+    .select({ id: schema.movies.id })
+    .from(schema.movies)
+    .where(eq(schema.movies.id, input.movieId))
+    .get();
+  if (!movie) return { ok: false, message: "That movie is no longer in the library." };
+
+  const abs = resolve(input.filePath);
+  if (allTrackedPaths().has(abs)) {
+    return { ok: false, message: "That file is already tracked." };
+  }
+  let fileSize: number | null = null;
+  try {
+    fileSize = statSync(abs).size;
+  } catch {
+    return { ok: false, message: "That file doesn't exist on disk." };
+  }
+  const label = input.label.trim() || parseVersionLabel(abs) || "Alternate";
+  db.insert(schema.mediaFiles)
+    .values({
+      mediaType: "movie",
+      mediaId: input.movieId,
+      label,
+      filePath: abs,
+      fileSize,
+      mimeType: mimeTypeForFile(abs),
+    })
+    .run();
+  return { ok: true, message: `Added version "${label}".` };
+}
+
+/** Remove a version (and its per-version watch progress). */
+export function removeMovieVersion(versionId: number): RetagResult {
+  const version = db
+    .select({ mediaId: schema.mediaFiles.mediaId })
+    .from(schema.mediaFiles)
+    .where(eq(schema.mediaFiles.id, versionId))
+    .get();
+  if (!version) return { ok: false, message: "That version no longer exists." };
+  db.transaction((tx) => {
+    tx.delete(schema.watchProgress)
+      .where(
+        and(
+          eq(schema.watchProgress.playableKind, "movie"),
+          eq(schema.watchProgress.playableId, version.mediaId),
+          eq(schema.watchProgress.versionId, versionId),
+        ),
+      )
+      .run();
+    tx.delete(schema.mediaFiles).where(eq(schema.mediaFiles.id, versionId)).run();
+  });
+  return { ok: true, message: "Removed that version." };
+}
+
+/** Make a version the default (primary) file, demoting the current primary. */
+export function setPrimaryVersion(input: { movieId: number; versionId: number }): RetagResult {
+  const movie = db
+    .select({
+      filePath: schema.movies.filePath,
+      fileSize: schema.movies.fileSize,
+      mimeType: schema.movies.mimeType,
+    })
+    .from(schema.movies)
+    .where(eq(schema.movies.id, input.movieId))
+    .get();
+  if (!movie) return { ok: false, message: "That movie is no longer in the library." };
+
+  const version = db
+    .select({
+      filePath: schema.mediaFiles.filePath,
+      fileSize: schema.mediaFiles.fileSize,
+      mimeType: schema.mediaFiles.mimeType,
+      label: schema.mediaFiles.label,
+    })
+    .from(schema.mediaFiles)
+    .where(
+      and(eq(schema.mediaFiles.id, input.versionId), eq(schema.mediaFiles.mediaId, input.movieId)),
+    )
+    .get();
+  if (!version) return { ok: false, message: "That version no longer exists." };
+
+  db.transaction((tx) => {
+    tx.insert(schema.mediaFiles)
+      .values({
+        mediaType: "movie",
+        mediaId: input.movieId,
+        label: parseVersionLabel(movie.filePath) ?? "Alternate",
+        filePath: movie.filePath,
+        fileSize: movie.fileSize,
+        mimeType: movie.mimeType,
+      })
+      .run();
+    tx.update(schema.movies)
+      .set({ filePath: version.filePath, fileSize: version.fileSize, mimeType: version.mimeType })
+      .where(eq(schema.movies.id, input.movieId))
+      .run();
+    tx.delete(schema.mediaFiles).where(eq(schema.mediaFiles.id, input.versionId)).run();
+    // The two swapped files change versionId, so their old progress no longer
+    // lines up — clear it rather than resume the wrong file.
+    tx.delete(schema.watchProgress)
+      .where(
+        and(
+          eq(schema.watchProgress.playableKind, "movie"),
+          eq(schema.watchProgress.playableId, input.movieId),
+          inArray(schema.watchProgress.versionId, [0, input.versionId]),
+        ),
+      )
+      .run();
+  });
+  return { ok: true, message: `"${version.label}" is now the default version.` };
 }

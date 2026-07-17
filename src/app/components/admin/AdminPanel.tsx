@@ -24,6 +24,7 @@ import type { BrokenLink, LibraryMatch, OpenReport } from "@/db/queries";
 import { tmdbImage } from "@/lib/tmdb-image";
 import type { UntrackedFile, UntrackedReason, UntrackedResult } from "@/lib/untracked";
 
+import MovieVersionsEditor from "./MovieVersionsEditor";
 import TmdbMatchPicker from "./TmdbMatchPicker";
 
 const UNTRACKED_LABEL: Record<UntrackedReason, string> = {
@@ -255,16 +256,24 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
   // Manual TMDB re-matching (untracked "assign" + tracked "re-match").
   const [applying, setApplying] = useState(false);
   const [matchPath, setMatchPath] = useState<string | null>(null); // open untracked picker
+  // Per-row result of an untracked "Use this" apply, shown inline by the picker.
+  const [assignResult, setAssignResult] = useState<{
+    path: string;
+    ok: boolean;
+    message: string;
+  } | null>(null);
   const [libQuery, setLibQuery] = useState("");
   const [libResults, setLibResults] = useState<LibraryMatch[] | null>(null);
   const [libSearching, startLibSearch] = useTransition();
   const [fixKey, setFixKey] = useState<string | null>(null); // open re-match picker
   const [tvKey, setTvKey] = useState<string | null>(null); // open match-to-TV picker
+  const [versionsKey, setVersionsKey] = useState<string | null>(null); // open versions editor
   const libKey = (m: LibraryMatch) => `${m.kind}-${m.id}`;
   const [reports, setReports] = useState<OpenReport[] | null>(null);
 
   function onAssignUntracked(file: UntrackedFile, tmdbId: number) {
     setApplying(true);
+    setAssignResult(null);
     startTransition(async () => {
       const res = await assignUntrackedMatchAction({
         path: file.path,
@@ -273,6 +282,7 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
       });
       setApplying(false);
       setMessage(res.message);
+      setAssignResult({ path: file.path, ok: res.ok, message: res.message });
       if (res.ok) {
         setMatchPath(null);
         setUntracked(await findUntrackedFilesAction()); // drop the now-tracked file
@@ -602,7 +612,10 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
                         type="button"
                         className={SECONDARY_BUTTON_CLASS}
                         disabled={applying}
-                        onClick={() => setMatchPath(matchPath === u.path ? null : u.path)}
+                        onClick={() => {
+                          setMatchPath(matchPath === u.path ? null : u.path);
+                          setAssignResult(null);
+                        }}
                       >
                         {matchPath === u.path ? "Cancel" : "Find match"}
                       </button>
@@ -615,6 +628,9 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
                       applying={applying}
                       onApply={(tmdbId) => onAssignUntracked(u, tmdbId)}
                     />
+                  )}
+                  {assignResult?.path === u.path && !assignResult.ok && (
+                    <p className="text-sm text-accent">{assignResult.message}</p>
                   )}
                 </li>
               ))}
@@ -687,10 +703,26 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
                           onClick={() => {
                             setTvKey(tvKey === key ? null : key);
                             setFixKey(null);
+                            setVersionsKey(null);
                           }}
                           title="Pull metadata from a TMDB TV entry, keeping it one item"
                         >
                           {tvKey === key ? "Cancel" : "Match to TV"}
+                        </button>
+                      )}
+                      {m.kind === "movie" && (
+                        <button
+                          type="button"
+                          className={SECONDARY_BUTTON_CLASS}
+                          disabled={applying}
+                          onClick={() => {
+                            setVersionsKey(versionsKey === key ? null : key);
+                            setFixKey(null);
+                            setTvKey(null);
+                          }}
+                          title="Manage multiple files (resolutions / cuts) for this movie"
+                        >
+                          {versionsKey === key ? "Cancel" : "Versions"}
                         </button>
                       )}
                       <button
@@ -700,6 +732,7 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
                         onClick={() => {
                           setFixKey(fixKey === key ? null : key);
                           setTvKey(null);
+                          setVersionsKey(null);
                         }}
                       >
                         {fixKey === key ? "Cancel" : "Re-match"}
@@ -722,6 +755,7 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
                       onApply={(tmdbTvId, label) => onMatchToTv(m, tmdbTvId, label)}
                     />
                   )}
+                  {versionsKey === key && <MovieVersionsEditor movieId={m.id} />}
                 </li>
               );
             })}

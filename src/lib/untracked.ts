@@ -1,7 +1,7 @@
 import { join, resolve } from "node:path";
 
 import { db } from "@/db";
-import { episodes, movies } from "@/db/schema";
+import { episodes, mediaFiles, movies } from "@/db/schema";
 
 import {
   parseEpisodeNumbers,
@@ -33,6 +33,9 @@ function trackedPaths(): Set<string> {
   }
   for (const e of db.select({ filePath: episodes.filePath }).from(episodes).all()) {
     set.add(e.filePath);
+  }
+  for (const v of db.select({ filePath: mediaFiles.filePath }).from(mediaFiles).all()) {
+    set.add(v.filePath);
   }
   return set;
 }

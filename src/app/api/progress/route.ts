@@ -34,6 +34,7 @@ export async function POST(request: Request) {
     parsed.numericId,
     Math.max(0, position),
     typeof duration === "number" && Number.isFinite(duration) ? duration : null,
+    parsed.versionId,
   );
 
   return new Response(null, { status: 204 });

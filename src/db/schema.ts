@@ -274,14 +274,43 @@ export const watchProgress = sqliteTable(
       .references(() => profiles.id, { onDelete: "cascade" }),
     playableKind: text("playable_kind", { enum: ["movie", "episode"] }).notNull(),
     playableId: integer("playable_id").notNull(),
+    /** Which file version this progress is for: 0 = primary, else a media_files id. */
+    versionId: integer("version_id").notNull().default(0),
     positionSeconds: real("position_seconds").notNull().default(0),
     durationSeconds: real("duration_seconds"),
     completed: integer("completed").notNull().default(0),
     updatedAt: text("updated_at").default(sql`(CURRENT_TIMESTAMP)`),
   },
   (t) => [
-    uniqueIndex("watch_progress_unq").on(t.profileId, t.playableKind, t.playableId),
+    uniqueIndex("watch_progress_unq").on(
+      t.profileId,
+      t.playableKind,
+      t.playableId,
+      t.versionId,
+    ),
   ],
+);
+
+/**
+ * Extra playable files for a title beyond the primary one on the parent row
+ * (e.g. a 4K or Unrated version of a movie). Polymorphic over movies; integrity
+ * for (mediaType, mediaId) is enforced in application code (no FK). The primary
+ * version stays on `movies.filePath` (versionId 0); these rows carry the rest.
+ */
+export const mediaFiles = sqliteTable(
+  "media_files",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    mediaType: text("media_type", { enum: ["movie"] }).notNull(),
+    mediaId: integer("media_id").notNull(),
+    /** Display label, e.g. "4K", "1080p", "Unrated · Extended". */
+    label: text("label").notNull(),
+    filePath: text("file_path").notNull(),
+    fileSize: integer("file_size"),
+    mimeType: text("mime_type"),
+    position: integer("position").notNull().default(0),
+  },
+  (t) => [index("media_files_media_idx").on(t.mediaType, t.mediaId)],
 );
 
 /**
@@ -360,3 +389,4 @@ export type Watchlist = typeof watchlist.$inferSelect;
 export type AppSetting = typeof appSettings.$inferSelect;
 export type JobRun = typeof jobRuns.$inferSelect;
 export type Report = typeof reports.$inferSelect;
+export type MediaFile = typeof mediaFiles.$inferSelect;

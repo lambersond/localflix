@@ -8,7 +8,7 @@ import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "../db/schema";
 import { cacheArtwork } from "./images";
 import { reindexSearch } from "./search-index";
-import { isBrowserPlayable, mimeTypeForFile } from "./media";
+import { isBrowserPlayable, mimeTypeForFile, parseVersionLabel } from "./media";
 import {
   parseEpisodeNumbers,
   parseMovieFilename,
@@ -475,7 +475,7 @@ export function createScanner(db: DB, log: Logger) {
     return { kept, skipped: preferred.length - kept.length };
   }
 
-  /** Absolute paths of every file already in the library (movies + episodes). */
+  /** Absolute paths of every file already in the library (movies + episodes + versions). */
   function loadKnownPaths(): Set<string> {
     const set = new Set<string>();
     for (const m of db.select({ filePath: schema.movies.filePath }).from(schema.movies).all()) {
@@ -484,7 +484,67 @@ export function createScanner(db: DB, log: Logger) {
     for (const e of db.select({ filePath: schema.episodes.filePath }).from(schema.episodes).all()) {
       set.add(e.filePath);
     }
+    for (const v of db.select({ filePath: schema.mediaFiles.filePath }).from(schema.mediaFiles).all()) {
+      set.add(v.filePath);
+    }
     return set;
+  }
+
+  /**
+   * Attach `file` as an additional version of an existing movie — or promote it
+   * to primary when it's browser-playable and the current primary isn't (so the
+   * default stream stays playable). De-duped by resolved path.
+   */
+  function attachMovieVersion(
+    movie: { id: number; filePath: string },
+    file: string,
+  ): "added" | "promoted" | "exists" {
+    const abs = resolve(file);
+    if (resolve(movie.filePath) === abs) return "exists";
+    const already = db
+      .select({ id: schema.mediaFiles.id })
+      .from(schema.mediaFiles)
+      .where(
+        and(
+          eq(schema.mediaFiles.mediaType, "movie"),
+          eq(schema.mediaFiles.mediaId, movie.id),
+          eq(schema.mediaFiles.filePath, abs),
+        ),
+      )
+      .get();
+    if (already) return "exists";
+
+    const info = fileInfo(file);
+    if (isBrowserPlayable(file) && !isBrowserPlayable(movie.filePath)) {
+      const old = fileInfo(movie.filePath);
+      db.insert(schema.mediaFiles)
+        .values({
+          mediaType: "movie",
+          mediaId: movie.id,
+          label: parseVersionLabel(movie.filePath) ?? "Alternate",
+          filePath: old.absPath,
+          fileSize: old.fileSize,
+          mimeType: old.mimeType,
+        })
+        .run();
+      db.update(schema.movies)
+        .set({ filePath: info.absPath, fileSize: info.fileSize, mimeType: info.mimeType })
+        .where(eq(schema.movies.id, movie.id))
+        .run();
+      return "promoted";
+    }
+
+    db.insert(schema.mediaFiles)
+      .values({
+        mediaType: "movie",
+        mediaId: movie.id,
+        label: parseVersionLabel(file) ?? "Alternate",
+        filePath: info.absPath,
+        fileSize: info.fileSize,
+        mimeType: info.mimeType,
+      })
+      .run();
+    return "added";
   }
 
   /**
@@ -548,6 +608,7 @@ export function createScanner(db: DB, log: Logger) {
     const matched: number[] = [];
     const seen = new Set<number>();
     let imported = 0;
+    let versions = 0;
     let noMatch = 0;
     let errors = 0;
     let skippedExisting = 0;
@@ -569,10 +630,26 @@ export function createScanner(db: DB, log: Logger) {
           continue;
         }
 
-        const info = await ingestMovieByTmdbId(tmdbId, file);
-        const yr = info.releaseDate ? ` (${info.releaseDate.slice(0, 4)})` : "";
-        log(`  ✓ ${info.title}${yr} -> ${basename(file)} (id ${info.id})`);
-        imported++;
+        // A second file for a movie already in the library becomes a version
+        // instead of overwriting the primary (which is the old collapse bug).
+        const existing = db
+          .select({ id: schema.movies.id, filePath: schema.movies.filePath })
+          .from(schema.movies)
+          .where(eq(schema.movies.tmdbId, tmdbId))
+          .get();
+
+        if (existing && resolve(existing.filePath) !== resolve(file)) {
+          const tag = attachMovieVersion(existing, file);
+          if (tag !== "exists") {
+            log(`  ✓ version (${tag}) -> ${basename(file)} (movie id ${existing.id})`);
+            versions++;
+          }
+        } else {
+          const info = await ingestMovieByTmdbId(tmdbId, file);
+          const yr = info.releaseDate ? ` (${info.releaseDate.slice(0, 4)})` : "";
+          log(`  ✓ ${info.title}${yr} -> ${basename(file)} (id ${info.id})`);
+          imported++;
+        }
         if (!seen.has(tmdbId)) {
           seen.add(tmdbId);
           matched.push(tmdbId);
@@ -584,8 +661,11 @@ export function createScanner(db: DB, log: Logger) {
       }
     }
 
+    const versionsMsg = versions > 0 ? ` · ${versions} version(s)` : "";
     const existingMsg = onlyNew ? ` · ${skippedExisting} already-indexed` : "";
-    log(`Movies: ${imported} imported · ${noMatch} no-match · ${errors} error(s)${existingMsg}`);
+    log(
+      `Movies: ${imported} imported${versionsMsg} · ${noMatch} no-match · ${errors} error(s)${existingMsg}`,
+    );
 
     if (onlyNew) {
       // Fold new titles into the full Movies row; leave the hero untouched.

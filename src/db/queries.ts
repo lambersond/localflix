@@ -5,6 +5,7 @@ import { and, asc, desc, eq, gt, gte, inArray, like, or, sql } from "drizzle-orm
 import {
   formatRuntime,
   isBrowserPlayable,
+  parseVersionLabel,
   toPlayableId,
   type PlayableId,
 } from "@/lib/media";
@@ -34,6 +35,7 @@ import {
   appSettings,
   jobRuns,
   reports,
+  mediaFiles,
   type Episode,
   type Movie,
   type Profile,
@@ -86,6 +88,27 @@ export function getPlayableFile(
   p: PlayableId,
 ): { filePath: string; mimeType: string | null; title: string } | null {
   if (p.kind === "movie") {
+    // A non-primary version streams from media_files; title stays the movie's.
+    if (p.versionId > 0) {
+      const version = db
+        .select({ filePath: mediaFiles.filePath, mimeType: mediaFiles.mimeType })
+        .from(mediaFiles)
+        .where(
+          and(
+            eq(mediaFiles.id, p.versionId),
+            eq(mediaFiles.mediaType, "movie"),
+            eq(mediaFiles.mediaId, p.numericId),
+          ),
+        )
+        .get();
+      const movie = db
+        .select({ title: movies.title })
+        .from(movies)
+        .where(eq(movies.id, p.numericId))
+        .get();
+      if (!version || !movie) return null;
+      return { filePath: version.filePath, mimeType: version.mimeType, title: movie.title };
+    }
     const row = db
       .select({
         filePath: movies.filePath,
@@ -138,11 +161,20 @@ export function getWatchMeta(p: PlayableId): WatchMeta | null {
       .where(eq(movies.id, p.numericId))
       .get();
     if (!row) return null;
+    // A non-primary version supplies its own MIME (for the Cast contentType).
+    const mimeType =
+      p.versionId > 0
+        ? (db
+            .select({ mimeType: mediaFiles.mimeType })
+            .from(mediaFiles)
+            .where(and(eq(mediaFiles.id, p.versionId), eq(mediaFiles.mediaId, row.id)))
+            .get()?.mimeType ?? row.mimeType)
+        : row.mimeType;
     return {
       title: row.title,
       backHref: `/movie/${row.id}`,
       posterPath: row.posterPath,
-      mimeType: row.mimeType,
+      mimeType,
     };
   }
 
@@ -171,6 +203,45 @@ export function getWatchMeta(p: PlayableId): WatchMeta | null {
     posterPath: row.posterPath,
     mimeType: row.mimeType,
   };
+}
+
+export interface MovieVersion {
+  /** 0 = the primary file on the movie row, else a media_files id. */
+  versionId: number;
+  label: string;
+  filePath: string;
+}
+
+/**
+ * All playable versions of a movie: the primary (versionId 0) plus any
+ * media_files rows. Drives the detail-page picker (rendered only when >1).
+ */
+export function getMovieVersions(movieId: number): MovieVersion[] {
+  const movie = db
+    .select({ filePath: movies.filePath })
+    .from(movies)
+    .where(eq(movies.id, movieId))
+    .get();
+  if (!movie) return [];
+
+  const versions: MovieVersion[] = [
+    {
+      versionId: 0,
+      label: parseVersionLabel(movie.filePath) ?? "Original",
+      filePath: movie.filePath,
+    },
+  ];
+
+  const extras = db
+    .select({ id: mediaFiles.id, label: mediaFiles.label, filePath: mediaFiles.filePath })
+    .from(mediaFiles)
+    .where(and(eq(mediaFiles.mediaType, "movie"), eq(mediaFiles.mediaId, movieId)))
+    .orderBy(asc(mediaFiles.position), asc(mediaFiles.id))
+    .all();
+  for (const e of extras) {
+    versions.push({ versionId: e.id, label: e.label, filePath: e.filePath });
+  }
+  return versions;
 }
 
 function cardsForItems(
@@ -843,8 +914,34 @@ export function getWatchProgress(
           eq(watchProgress.profileId, profileId),
           eq(watchProgress.playableKind, p.kind),
           eq(watchProgress.playableId, p.numericId),
+          eq(watchProgress.versionId, p.versionId),
         ),
       )
+      .get() ?? null
+  );
+}
+
+/**
+ * The most-recently-played version of a movie (across all files), so the detail
+ * hero + version picker default to what the viewer last watched. versionId 0 =
+ * the primary file.
+ */
+export function getLatestMovieProgress(
+  profileId: number,
+  movieId: number,
+): WatchProgress | null {
+  return (
+    db
+      .select()
+      .from(watchProgress)
+      .where(
+        and(
+          eq(watchProgress.profileId, profileId),
+          eq(watchProgress.playableKind, "movie"),
+          eq(watchProgress.playableId, movieId),
+        ),
+      )
+      .orderBy(desc(watchProgress.updatedAt))
       .get() ?? null
   );
 }
@@ -856,6 +953,7 @@ export function recordProgress(
   numericId: number,
   position: number,
   duration: number | null,
+  versionId = 0,
 ) {
   const completed = duration && duration > 0 && position / duration >= COMPLETE_FRACTION ? 1 : 0;
   db.insert(watchProgress)
@@ -863,12 +961,18 @@ export function recordProgress(
       profileId,
       playableKind: kind,
       playableId: numericId,
+      versionId,
       positionSeconds: position,
       durationSeconds: duration ?? null,
       completed,
     })
     .onConflictDoUpdate({
-      target: [watchProgress.profileId, watchProgress.playableKind, watchProgress.playableId],
+      target: [
+        watchProgress.profileId,
+        watchProgress.playableKind,
+        watchProgress.playableId,
+        watchProgress.versionId,
+      ],
       set: {
         positionSeconds: position,
         durationSeconds: duration ?? null,
@@ -882,6 +986,12 @@ export function recordProgress(
 /** Manual "mark as watched" / "mark unwatched". */
 export function setCompleted(profileId: number, p: PlayableId, completed: boolean) {
   const existing = getWatchProgress(profileId, p);
+  const conflictTarget = [
+    watchProgress.profileId,
+    watchProgress.playableKind,
+    watchProgress.playableId,
+    watchProgress.versionId,
+  ];
   if (completed) {
     const duration = existing?.durationSeconds ?? null;
     const position = duration ?? existing?.positionSeconds ?? 0;
@@ -890,12 +1000,13 @@ export function setCompleted(profileId: number, p: PlayableId, completed: boolea
         profileId,
         playableKind: p.kind,
         playableId: p.numericId,
+        versionId: p.versionId,
         positionSeconds: position,
         durationSeconds: duration,
         completed: 1,
       })
       .onConflictDoUpdate({
-        target: [watchProgress.profileId, watchProgress.playableKind, watchProgress.playableId],
+        target: conflictTarget,
         set: { completed: 1, positionSeconds: position, updatedAt: sql`(CURRENT_TIMESTAMP)` },
       })
       .run();
@@ -906,12 +1017,13 @@ export function setCompleted(profileId: number, p: PlayableId, completed: boolea
         profileId,
         playableKind: p.kind,
         playableId: p.numericId,
+        versionId: p.versionId,
         positionSeconds: 0,
         durationSeconds: existing?.durationSeconds ?? null,
         completed: 0,
       })
       .onConflictDoUpdate({
-        target: [watchProgress.profileId, watchProgress.playableKind, watchProgress.playableId],
+        target: conflictTarget,
         set: { completed: 0, positionSeconds: 0, updatedAt: sql`(CURRENT_TIMESTAMP)` },
       })
       .run();
@@ -950,7 +1062,7 @@ function movieResumeCard(row: WatchProgress): ResumeCardItem | null {
     .get();
   if (!m) return null;
   return {
-    playableId: toPlayableId("movie", m.id),
+    playableId: toPlayableId("movie", m.id, row.versionId),
     title: m.title,
     imagePath: m.posterPath,
     progressFraction: progressFraction(row),
@@ -999,10 +1111,23 @@ export function getContinueWatching(profileId: number): ResumeCardItem[] {
         gte(watchProgress.positionSeconds, CONTINUE_THRESHOLD_SECONDS),
       ),
     )
-    .orderBy(desc(watchProgress.updatedAt))
+    // id as a tiebreak so same-second updates still order deterministically
+    // (latest write wins) — matters when picking the latest version per title.
+    .orderBy(desc(watchProgress.updatedAt), desc(watchProgress.id))
     .all();
 
-  return rows
+  // Rows are newest-first, so keep only the latest version per title — a movie
+  // with progress on both its 1080p and 4K files shows one card, resuming the
+  // one last played.
+  const seen = new Set<string>();
+  const latestPerTitle = rows.filter((r) => {
+    const key = `${r.playableKind}-${r.playableId}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  return latestPerTitle
     .map((r) => (r.playableKind === "movie" ? movieResumeCard(r) : episodeResumeCard(r)))
     .filter((c): c is ResumeCardItem => c !== null);
 }
@@ -1137,6 +1262,14 @@ export function getWatchedItems(profileId: number): CardItem[] {
     )
     .all();
 
+  // Collapse per-version completed rows to one entry per movie (latest updatedAt).
+  const movieLatest = new Map<number, string>();
+  for (const m of movieRows) {
+    const ts = m.updatedAt ?? "";
+    const prev = movieLatest.get(m.id);
+    if (prev === undefined || ts.localeCompare(prev) > 0) movieLatest.set(m.id, ts);
+  }
+
   const totals = db
     .select({ showId: seasons.showId, total: sql<number>`count(*)` })
     .from(episodes)
@@ -1165,7 +1298,11 @@ export function getWatchedItems(profileId: number): CardItem[] {
     .all();
 
   const merged: { mediaType: "movie" | "show"; mediaId: number; updatedAt: string }[] = [
-    ...movieRows.map((m) => ({ mediaType: "movie" as const, mediaId: m.id, updatedAt: m.updatedAt ?? "" })),
+    ...[...movieLatest].map(([mediaId, updatedAt]) => ({
+      mediaType: "movie" as const,
+      mediaId,
+      updatedAt,
+    })),
     ...completedByShow
       .filter((c) => {
         const total = totalByShow.get(c.showId) ?? 0;
@@ -1404,7 +1541,10 @@ export function getAutoScanEnabled(): boolean {
 export function getNonPlayableCount(): number {
   const movieFiles = db.select({ filePath: movies.filePath }).from(movies).all();
   const episodeFiles = db.select({ filePath: episodes.filePath }).from(episodes).all();
-  return [...movieFiles, ...episodeFiles].filter((r) => !isBrowserPlayable(r.filePath)).length;
+  const versionFiles = db.select({ filePath: mediaFiles.filePath }).from(mediaFiles).all();
+  return [...movieFiles, ...episodeFiles, ...versionFiles].filter(
+    (r) => !isBrowserPlayable(r.filePath),
+  ).length;
 }
 
 // ── Admin: broken media links ────────────────────────────────────────────────

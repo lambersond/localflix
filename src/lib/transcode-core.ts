@@ -59,7 +59,7 @@ export interface TranscodeSummary {
 }
 
 interface DbJob {
-  kind: "movie" | "episode";
+  kind: "movie" | "episode" | "version";
   id: number;
   filePath: string;
 }
@@ -90,7 +90,13 @@ export async function runDbTranscode(
     .all()
     .filter((r) => !isBrowserPlayable(r.filePath))
     .map((r): DbJob => ({ kind: "episode", id: r.id, filePath: r.filePath }));
-  const jobs = [...movies, ...episodes];
+  const versions = db
+    .select({ id: schema.mediaFiles.id, filePath: schema.mediaFiles.filePath })
+    .from(schema.mediaFiles)
+    .all()
+    .filter((r) => !isBrowserPlayable(r.filePath))
+    .map((r): DbJob => ({ kind: "version", id: r.id, filePath: r.filePath }));
+  const jobs = [...movies, ...episodes, ...versions];
 
   const summary: TranscodeSummary = { transcoded: 0, alreadyDone: 0, failed: 0 };
   if (jobs.length === 0) {
@@ -138,6 +144,8 @@ function repoint(db: DB, job: DbJob, output: string) {
   const set = { filePath: output, mimeType: "video/mp4", fileSize };
   if (job.kind === "movie") {
     db.update(schema.movies).set(set).where(eq(schema.movies.id, job.id)).run();
+  } else if (job.kind === "version") {
+    db.update(schema.mediaFiles).set(set).where(eq(schema.mediaFiles.id, job.id)).run();
   } else {
     db.update(schema.episodes).set(set).where(eq(schema.episodes.id, job.id)).run();
   }

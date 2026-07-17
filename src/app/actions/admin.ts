@@ -6,6 +6,7 @@ import {
   AUTO_SCAN_ENABLED_KEY,
   CACHE_ARTWORK_ON_SCAN_KEY,
   findBrokenLinks,
+  getMovieVersions,
   INCLUDE_NON_PLAYABLE_KEY,
   listOpenReports,
   removeBrokenLinks,
@@ -14,6 +15,7 @@ import {
   setSetting,
   type BrokenLink,
   type LibraryMatch,
+  type MovieVersion,
   type OpenReport,
   type RemovalSummary,
 } from "@/db/queries";
@@ -24,10 +26,15 @@ import {
   type TriggerResult,
 } from "@/lib/jobs";
 import {
+  addMovieVersion,
   assignUntrackedMatch,
+  listMovieVersionCandidates,
   matchMovieToTv,
   rematchTitle,
+  removeMovieVersion,
+  setPrimaryVersion,
   type RetagResult,
+  type VersionCandidate,
 } from "@/lib/retag";
 import {
   getMovieDetails,
@@ -180,4 +187,44 @@ export async function listOpenReportsAction(): Promise<OpenReport[]> {
 export async function resolveReportAction(id: number): Promise<void> {
   resolveReport(id);
   revalidatePath("/admin");
+}
+
+/** A movie's current file versions (primary + extras). */
+export async function getMovieVersionsAction(movieId: number): Promise<MovieVersion[]> {
+  return getMovieVersions(movieId);
+}
+
+/** Untracked video files in a movie's folder — candidates to add as versions. */
+export async function listMovieVersionCandidatesAction(
+  movieId: number,
+): Promise<VersionCandidate[]> {
+  return listMovieVersionCandidates(movieId);
+}
+
+/** Attach a file as an additional version of a movie. */
+export async function addMovieVersionAction(input: {
+  movieId: number;
+  filePath: string;
+  label: string;
+}): Promise<RetagResult> {
+  const result = addMovieVersion(input);
+  if (result.ok) revalidatePath("/admin");
+  return result;
+}
+
+/** Remove a movie version. */
+export async function removeMovieVersionAction(versionId: number): Promise<RetagResult> {
+  const result = removeMovieVersion(versionId);
+  if (result.ok) revalidatePath("/admin");
+  return result;
+}
+
+/** Make a version the default (primary) file. */
+export async function setPrimaryVersionAction(input: {
+  movieId: number;
+  versionId: number;
+}): Promise<RetagResult> {
+  const result = setPrimaryVersion(input);
+  if (result.ok) revalidatePath("/admin");
+  return result;
 }
