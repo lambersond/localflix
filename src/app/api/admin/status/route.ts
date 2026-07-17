@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import {
+  countOpenReports,
   getAutoScanEnabled,
   getCacheArtworkOnScan,
   getIncludeNonPlayable,
@@ -32,5 +33,6 @@ export async function GET() {
     libraryTotal: getLibraryFileCount(),
     // A disabled toggle means no scan will fire, so surface no "next" time.
     nextScanAt: autoScanEnabled ? nextScanAt() : null,
+    openReports: countOpenReports(),
   });
 }

@@ -13,6 +13,16 @@ import {
 } from "./fs-scan";
 import { createScanner } from "./scan";
 import { reindexSearch } from "./search-index";
+import {
+  getShowCast,
+  getShowCertification,
+  getShowDetails,
+  keywordsOf,
+  videosOf,
+} from "./tmdb";
+import { filterAvailableVideos } from "./youtube";
+
+const TOP_CAST = 15;
 
 /**
  * Manual TMDB re-matching. The scan matches a filename to `results[0]` of a TMDB
@@ -264,6 +274,130 @@ export async function rematchTitle(input: {
     reindexSearch(db, quiet);
     const show = showByTmdbId(input.tmdbId);
     return { ok: true, message: `Re-matched to "${show?.name ?? "show"}".` };
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Point a movie at a TMDB **TV** entry, keeping it as one playable item. The
+ * movie row (its internal id, `filePath`, and watch progress) is preserved; only
+ * its metadata is overwritten from the show — for a mini-series a user combined
+ * into a single file. All TMDB reads happen first (better-sqlite3 transactions
+ * are synchronous), then one transaction rewrites the row + its join tables.
+ */
+export async function matchMovieToTv(input: {
+  movieId: number;
+  tmdbTvId: number;
+}): Promise<RetagResult> {
+  const scanner = createScanner(db, quiet);
+  try {
+    const movie = db
+      .select({ id: schema.movies.id })
+      .from(schema.movies)
+      .where(eq(schema.movies.id, input.movieId))
+      .get();
+    if (!movie) return { ok: false, message: "That movie is no longer in the library." };
+
+    const clash = movieByTmdbId(input.tmdbTvId);
+    if (clash && clash.id !== input.movieId) {
+      return {
+        ok: false,
+        message: `That TMDB id is already in your library as "${clash.title}".`,
+      };
+    }
+
+    // Fetch everything up front so a TMDB failure changes nothing in the DB.
+    const show = await getShowDetails(input.tmdbTvId);
+    const certification = await getShowCertification(show.id);
+    const keywords = keywordsOf(show);
+    const videos = await filterAvailableVideos(videosOf(show), quiet);
+    const cast = (await getShowCast(show.id)).slice(0, TOP_CAST);
+
+    db.transaction((tx) => {
+      tx.update(schema.movies)
+        .set({
+          tmdbId: show.id,
+          title: show.name,
+          overview: show.overview,
+          posterPath: show.poster_path,
+          backdropPath: show.backdrop_path,
+          releaseDate: show.first_air_date,
+          runtimeMinutes: null,
+          certification,
+          voteAverage: show.vote_average,
+          voteCount: show.vote_count,
+          tmdbCollectionId: null,
+        })
+        .where(eq(schema.movies.id, input.movieId))
+        .run();
+
+      // Genres.
+      tx.delete(schema.movieGenres).where(eq(schema.movieGenres.movieId, input.movieId)).run();
+      for (const g of show.genres) {
+        tx.insert(schema.genres)
+          .values({ id: g.id, name: g.name })
+          .onConflictDoUpdate({ target: schema.genres.id, set: { name: g.name } })
+          .run();
+        tx.insert(schema.movieGenres)
+          .values({ movieId: input.movieId, genreId: g.id })
+          .onConflictDoNothing()
+          .run();
+      }
+
+      // Keywords.
+      tx.delete(schema.movieKeywords).where(eq(schema.movieKeywords.movieId, input.movieId)).run();
+      for (const k of keywords) {
+        tx.insert(schema.keywords)
+          .values({ id: k.id, name: k.name })
+          .onConflictDoUpdate({ target: schema.keywords.id, set: { name: k.name } })
+          .run();
+        tx.insert(schema.movieKeywords)
+          .values({ movieId: input.movieId, keywordId: k.id })
+          .onConflictDoNothing()
+          .run();
+      }
+
+      // Trailers/clips.
+      tx.delete(schema.videos)
+        .where(and(eq(schema.videos.mediaType, "movie"), eq(schema.videos.mediaId, input.movieId)))
+        .run();
+      videos.forEach((v, index) => {
+        tx.insert(schema.videos)
+          .values({
+            mediaType: "movie",
+            mediaId: input.movieId,
+            youtubeKey: v.key,
+            name: v.name,
+            type: v.type,
+            official: v.official ? 1 : 0,
+            publishedAt: v.published_at ?? null,
+            position: index,
+          })
+          .onConflictDoNothing()
+          .run();
+      });
+
+      // Cast.
+      tx.delete(schema.movieCast).where(eq(schema.movieCast.movieId, input.movieId)).run();
+      for (const c of cast) {
+        tx.insert(schema.people)
+          .values({ id: c.id, name: c.name, profilePath: c.profile_path })
+          .onConflictDoUpdate({
+            target: schema.people.id,
+            set: { name: c.name, profilePath: c.profile_path },
+          })
+          .run();
+        tx.insert(schema.movieCast)
+          .values({ movieId: input.movieId, personId: c.id, ord: c.order ?? null })
+          .onConflictDoNothing()
+          .run();
+      }
+    });
+
+    scanner.rebuildRowFromDb("movie");
+    reindexSearch(db, quiet);
+    return { ok: true, message: `Matched "${show.name}" from TMDB (TV).` };
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
   }

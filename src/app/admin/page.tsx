@@ -1,5 +1,6 @@
 import { db } from "@/db";
 import {
+  countOpenReports,
   getAutoScanEnabled,
   getCacheArtworkOnScan,
   getIncludeNonPlayable,
@@ -29,6 +30,7 @@ export default function AdminPage() {
     autoScanEnabled,
     libraryTotal: getLibraryFileCount(),
     nextScanAt: autoScanEnabled ? nextScanAt() : null,
+    openReports: countOpenReports(),
   };
 
   return (

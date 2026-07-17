@@ -7,11 +7,14 @@ import {
   CACHE_ARTWORK_ON_SCAN_KEY,
   findBrokenLinks,
   INCLUDE_NON_PLAYABLE_KEY,
+  listOpenReports,
   removeBrokenLinks,
+  resolveReport,
   searchLibraryTitles,
   setSetting,
   type BrokenLink,
   type LibraryMatch,
+  type OpenReport,
   type RemovalSummary,
 } from "@/db/queries";
 import {
@@ -20,7 +23,12 @@ import {
   triggerTranscode,
   type TriggerResult,
 } from "@/lib/jobs";
-import { assignUntrackedMatch, rematchTitle, type RetagResult } from "@/lib/retag";
+import {
+  assignUntrackedMatch,
+  matchMovieToTv,
+  rematchTitle,
+  type RetagResult,
+} from "@/lib/retag";
 import {
   getMovieDetails,
   getShowDetails,
@@ -151,4 +159,25 @@ export async function rematchTitleAction(input: {
   const result = await rematchTitle(input);
   if (result.ok) revalidatePath("/admin");
   return result;
+}
+
+/** Point a movie at a TMDB TV entry, keeping it a single playable item. */
+export async function matchMovieToTvAction(input: {
+  movieId: number;
+  tmdbTvId: number;
+}): Promise<RetagResult> {
+  const result = await matchMovieToTv(input);
+  if (result.ok) revalidatePath("/admin");
+  return result;
+}
+
+/** Open "incorrect item" reports for the admin queue (read-only). */
+export async function listOpenReportsAction(): Promise<OpenReport[]> {
+  return listOpenReports();
+}
+
+/** Mark a report resolved. */
+export async function resolveReportAction(id: number): Promise<void> {
+  resolveReport(id);
+  revalidatePath("/admin");
 }

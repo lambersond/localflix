@@ -324,6 +324,26 @@ export const jobRuns = sqliteTable("job_runs", {
   summary: text("summary"),
 });
 
+/**
+ * Viewer-submitted "this item is wrong" reports for the admin to review and fix.
+ * Polymorphic over movies/shows; integrity for (mediaType, mediaId) is enforced
+ * in application code (no FK), matching the other polymorphic tables.
+ */
+export const reports = sqliteTable("reports", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  mediaType: text("media_type", { enum: ["movie", "show"] }).notNull(),
+  mediaId: integer("media_id").notNull(),
+  /** Optional free-text note describing what the media actually is. */
+  note: text("note"),
+  /** The reporting profile, if one was active (nullable — reporting is open). */
+  profileId: integer("profile_id"),
+  status: text("status", { enum: ["open", "resolved"] })
+    .notNull()
+    .default("open"),
+  createdAt: text("created_at").default(sql`(CURRENT_TIMESTAMP)`),
+  resolvedAt: text("resolved_at"),
+});
+
 export type Movie = typeof movies.$inferSelect;
 export type Show = typeof shows.$inferSelect;
 export type Season = typeof seasons.$inferSelect;
@@ -339,3 +359,4 @@ export type WatchProgress = typeof watchProgress.$inferSelect;
 export type Watchlist = typeof watchlist.$inferSelect;
 export type AppSetting = typeof appSettings.$inferSelect;
 export type JobRun = typeof jobRuns.$inferSelect;
+export type Report = typeof reports.$inferSelect;

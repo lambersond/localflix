@@ -33,6 +33,7 @@ import {
   watchProgress,
   appSettings,
   jobRuns,
+  reports,
   type Episode,
   type Movie,
   type Profile,
@@ -1682,5 +1683,90 @@ export function getLastRun(kind: "scan" | "transcode" | "artwork") {
       .orderBy(desc(jobRuns.id))
       .limit(1)
       .get() ?? null
+  );
+}
+
+// ── Admin: incorrect-item reports ──
+
+/** File a viewer report that a title's metadata is wrong. */
+export function createReport(input: {
+  mediaType: "movie" | "show";
+  mediaId: number;
+  note: string | null;
+  profileId: number | null;
+}): void {
+  db.insert(reports)
+    .values({
+      mediaType: input.mediaType,
+      mediaId: input.mediaId,
+      note: input.note,
+      profileId: input.profileId,
+    })
+    .run();
+}
+
+export interface OpenReport {
+  id: number;
+  mediaType: "movie" | "show";
+  mediaId: number;
+  title: string;
+  note: string | null;
+  createdAt: string | null;
+}
+
+/** Open reports, newest first, with the current title resolved for display. */
+export function listOpenReports(): OpenReport[] {
+  const rows = db
+    .select({
+      id: reports.id,
+      mediaType: reports.mediaType,
+      mediaId: reports.mediaId,
+      note: reports.note,
+      createdAt: reports.createdAt,
+    })
+    .from(reports)
+    .where(eq(reports.status, "open"))
+    .orderBy(desc(reports.id))
+    .all();
+
+  const movieIds = rows.filter((r) => r.mediaType === "movie").map((r) => r.mediaId);
+  const showIds = rows.filter((r) => r.mediaType === "show").map((r) => r.mediaId);
+  const movieTitles = new Map(
+    (movieIds.length
+      ? db.select({ id: movies.id, title: movies.title }).from(movies).where(inArray(movies.id, movieIds)).all()
+      : []
+    ).map((m) => [m.id, m.title]),
+  );
+  const showTitles = new Map(
+    (showIds.length
+      ? db.select({ id: shows.id, name: shows.name }).from(shows).where(inArray(shows.id, showIds)).all()
+      : []
+    ).map((s) => [s.id, s.name]),
+  );
+
+  return rows.map((r) => ({
+    id: r.id,
+    mediaType: r.mediaType,
+    mediaId: r.mediaId,
+    title:
+      (r.mediaType === "movie" ? movieTitles.get(r.mediaId) : showTitles.get(r.mediaId)) ??
+      `(deleted ${r.mediaType} #${r.mediaId})`,
+    note: r.note,
+    createdAt: r.createdAt,
+  }));
+}
+
+/** Mark a report resolved (admin has fixed or dismissed it). */
+export function resolveReport(id: number): void {
+  db.update(reports)
+    .set({ status: "resolved", resolvedAt: sql`(CURRENT_TIMESTAMP)` })
+    .where(eq(reports.id, id))
+    .run();
+}
+
+/** How many reports are still open (for the admin badge). */
+export function countOpenReports(): number {
+  return (
+    db.select({ n: sql<number>`count(*)` }).from(reports).where(eq(reports.status, "open")).get()?.n ?? 0
   );
 }

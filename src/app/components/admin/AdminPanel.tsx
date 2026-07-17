@@ -7,8 +7,11 @@ import {
   assignUntrackedMatchAction,
   findBrokenLinksAction,
   findUntrackedFilesAction,
+  listOpenReportsAction,
+  matchMovieToTvAction,
   rematchTitleAction,
   removeBrokenLinksAction,
+  resolveReportAction,
   searchLibraryTitlesAction,
   setAutoScanEnabledAction,
   setCacheArtworkOnScanAction,
@@ -17,7 +20,7 @@ import {
   triggerScanAction,
   triggerTranscodeAction,
 } from "@/app/actions/admin";
-import type { BrokenLink, LibraryMatch } from "@/db/queries";
+import type { BrokenLink, LibraryMatch, OpenReport } from "@/db/queries";
 import { tmdbImage } from "@/lib/tmdb-image";
 import type { UntrackedFile, UntrackedReason, UntrackedResult } from "@/lib/untracked";
 
@@ -92,6 +95,7 @@ export interface AdminStatus {
   autoScanEnabled: boolean;
   libraryTotal: number;
   nextScanAt: number | null;
+  openReports: number;
 }
 
 const KIND_LABEL: Record<"scan" | "transcode" | "artwork", string> = {
@@ -254,8 +258,10 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
   const [libQuery, setLibQuery] = useState("");
   const [libResults, setLibResults] = useState<LibraryMatch[] | null>(null);
   const [libSearching, startLibSearch] = useTransition();
-  const [fixKey, setFixKey] = useState<string | null>(null); // open library-row picker
+  const [fixKey, setFixKey] = useState<string | null>(null); // open re-match picker
+  const [tvKey, setTvKey] = useState<string | null>(null); // open match-to-TV picker
   const libKey = (m: LibraryMatch) => `${m.kind}-${m.id}`;
+  const [reports, setReports] = useState<OpenReport[] | null>(null);
 
   function onAssignUntracked(file: UntrackedFile, tmdbId: number) {
     setApplying(true);
@@ -301,6 +307,41 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
         setLibResults(await searchLibraryTitlesAction(libQuery)); // reflect the new title
         await refresh();
       }
+    });
+  }
+
+  function onMatchToTv(match: LibraryMatch, tmdbTvId: number, label: string) {
+    if (
+      !window.confirm(
+        `Replace this movie's metadata with the TV entry "${label}"? It stays one playable item and keeps your watch progress.`,
+      )
+    ) {
+      return;
+    }
+    setApplying(true);
+    startTransition(async () => {
+      const res = await matchMovieToTvAction({ movieId: match.id, tmdbTvId });
+      setApplying(false);
+      setMessage(res.message);
+      if (res.ok) {
+        setTvKey(null);
+        setLibResults(await searchLibraryTitlesAction(libQuery));
+        await refresh();
+      }
+    });
+  }
+
+  function onViewReports() {
+    startTransition(async () => {
+      setReports(await listOpenReportsAction());
+    });
+  }
+
+  function onResolveReport(id: number) {
+    startTransition(async () => {
+      await resolveReportAction(id);
+      setReports((prev) => (prev ? prev.filter((r) => r.id !== id) : prev));
+      await refresh();
     });
   }
 
@@ -637,14 +678,33 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
                         </span>
                       )}
                     </span>
-                    <button
-                      type="button"
-                      className={SECONDARY_BUTTON_CLASS}
-                      disabled={applying}
-                      onClick={() => setFixKey(fixKey === key ? null : key)}
-                    >
-                      {fixKey === key ? "Cancel" : "Re-match"}
-                    </button>
+                    <div className="flex shrink-0 gap-2">
+                      {m.kind === "movie" && (
+                        <button
+                          type="button"
+                          className={SECONDARY_BUTTON_CLASS}
+                          disabled={applying}
+                          onClick={() => {
+                            setTvKey(tvKey === key ? null : key);
+                            setFixKey(null);
+                          }}
+                          title="Pull metadata from a TMDB TV entry, keeping it one item"
+                        >
+                          {tvKey === key ? "Cancel" : "Match to TV"}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className={SECONDARY_BUTTON_CLASS}
+                        disabled={applying}
+                        onClick={() => {
+                          setFixKey(fixKey === key ? null : key);
+                          setTvKey(null);
+                        }}
+                      >
+                        {fixKey === key ? "Cancel" : "Re-match"}
+                      </button>
+                    </div>
                   </div>
                   {fixKey === key && (
                     <TmdbMatchPicker
@@ -654,9 +714,67 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
                       onApply={(tmdbId, label) => onRematch(m, tmdbId, label)}
                     />
                   )}
+                  {tvKey === key && (
+                    <TmdbMatchPicker
+                      kind="show"
+                      defaultQuery={m.title}
+                      applying={applying}
+                      onApply={(tmdbTvId, label) => onMatchToTv(m, tmdbTvId, label)}
+                    />
+                  )}
                 </li>
               );
             })}
+          </ul>
+        )}
+      </section>
+
+      {/* Reported items (viewer-flagged incorrect metadata) */}
+      <section className="flex flex-col gap-3 rounded-lg bg-surface/50 p-5">
+        <h2 className="text-lg font-semibold">
+          Reported items{status.openReports > 0 ? ` (${status.openReports})` : ""}
+        </h2>
+        <p className="text-sm text-muted">
+          Titles viewers flagged as incorrect. Fix one with &quot;Match to TV&quot; / &quot;Re-match&quot;
+          above, then resolve it.
+        </p>
+        <div>
+          <button
+            type="button"
+            disabled={pending || running}
+            onClick={onViewReports}
+            className={BUTTON_CLASS}
+          >
+            View reports
+          </button>
+        </div>
+
+        {reports !== null && reports.length === 0 && (
+          <p className="text-sm text-green-400">No open reports.</p>
+        )}
+
+        {reports !== null && reports.length > 0 && (
+          <ul className="flex flex-col divide-y divide-white/10 overflow-hidden rounded bg-black/30">
+            {reports.map((r) => (
+              <li key={r.id} className="flex items-start gap-3 p-3">
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-2">
+                    <span className={CHIP_CLASS}>{r.mediaType}</span>
+                    <span className="truncate text-sm font-medium text-foreground">{r.title}</span>
+                  </span>
+                  {r.note && <span className="mt-0.5 block text-xs text-muted">{r.note}</span>}
+                  <span className="mt-0.5 block text-[11px] text-muted/70">{fmt(r.createdAt)}</span>
+                </span>
+                <button
+                  type="button"
+                  className={SECONDARY_BUTTON_CLASS}
+                  disabled={pending}
+                  onClick={() => onResolveReport(r.id)}
+                >
+                  Resolve
+                </button>
+              </li>
+            ))}
           </ul>
         )}
       </section>

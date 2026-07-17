@@ -5,6 +5,7 @@ import { notFound } from "next/navigation";
 import CastRow from "@/app/components/common/CastRow";
 import KeywordChips from "@/app/components/common/KeywordChips";
 import MediaRow from "@/app/components/common/MediaRow";
+import ReportButton from "@/app/components/common/ReportButton";
 import ProgressBar from "@/app/components/common/ProgressBar";
 import Rating from "@/app/components/common/Rating";
 import VideoGallery from "@/app/components/common/VideoGallery";
@@ -138,6 +139,7 @@ export default async function MoviePage({
                 ) : null}
               </div>
             ) : null}
+            <ReportButton mediaType="movie" mediaId={movie.id} />
           </div>
         </div>
       </div>
