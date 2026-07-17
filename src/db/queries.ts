@@ -114,18 +114,35 @@ export function getPlayableFile(
   };
 }
 
-/** Display metadata for the watch page (title + a back-link target). */
-export function getWatchMeta(
-  p: PlayableId,
-): { title: string; backHref: string } | null {
+export interface WatchMeta {
+  title: string;
+  backHref: string;
+  /** Poster for the Cast device (TMDB relative path), or null. */
+  posterPath: string | null;
+  /** Stored MIME of the playable file, for the Cast contentType. */
+  mimeType: string | null;
+}
+
+/** Display metadata for the watch page (title, back-link, + Cast poster/MIME). */
+export function getWatchMeta(p: PlayableId): WatchMeta | null {
   if (p.kind === "movie") {
     const row = db
-      .select({ id: movies.id, title: movies.title })
+      .select({
+        id: movies.id,
+        title: movies.title,
+        posterPath: movies.posterPath,
+        mimeType: movies.mimeType,
+      })
       .from(movies)
       .where(eq(movies.id, p.numericId))
       .get();
     if (!row) return null;
-    return { title: row.title, backHref: `/movie/${row.id}` };
+    return {
+      title: row.title,
+      backHref: `/movie/${row.id}`,
+      posterPath: row.posterPath,
+      mimeType: row.mimeType,
+    };
   }
 
   const row = db
@@ -133,8 +150,10 @@ export function getWatchMeta(
       episodeName: episodes.name,
       episodeNumber: episodes.tmdbEpisodeNumber,
       seasonNumber: seasons.tmdbSeasonNumber,
+      mimeType: episodes.mimeType,
       showId: shows.id,
       showName: shows.name,
+      posterPath: shows.posterPath,
     })
     .from(episodes)
     .innerJoin(seasons, eq(episodes.seasonId, seasons.id))
@@ -145,7 +164,12 @@ export function getWatchMeta(
   const label = `${row.showName} — S${row.seasonNumber}:E${row.episodeNumber}${
     row.episodeName ? ` ${row.episodeName}` : ""
   }`;
-  return { title: label, backHref: `/show/${row.showId}` };
+  return {
+    title: label,
+    backHref: `/show/${row.showId}`,
+    posterPath: row.posterPath,
+    mimeType: row.mimeType,
+  };
 }
 
 function cardsForItems(

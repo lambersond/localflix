@@ -10,6 +10,13 @@ import { mimeTypeForFile, parsePlayableId } from "@/lib/media";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// A Cast device fetches this URL directly and can reject media without CORS
+// headers; allow any origin (LAN media server) and expose the range headers.
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges",
+};
+
 interface ResolvedFile {
   filePath: string;
   fileSize: number;
@@ -116,6 +123,7 @@ export async function GET(
         "Content-Length": String(fileSize),
         "Accept-Ranges": "bytes",
         "Cache-Control": "no-store",
+        ...CORS_HEADERS,
       },
     });
   }
@@ -143,6 +151,7 @@ export async function GET(
       "Content-Range": `bytes ${start}-${end}/${fileSize}`,
       "Accept-Ranges": "bytes",
       "Cache-Control": "no-store",
+      ...CORS_HEADERS,
     },
   });
 }
@@ -162,6 +171,7 @@ export async function HEAD(
       "Content-Length": String(resolved.fileSize),
       "Accept-Ranges": "bytes",
       "Cache-Control": "no-store",
+      ...CORS_HEADERS,
     },
   });
 }

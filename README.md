@@ -60,6 +60,23 @@ npm run transcode [-- --delete-original]
 `--dry-run` (prep mode) lists what would be converted without doing it. Conversion is idempotent —
 an existing sibling `.mp4` is reused. The conversion can also be triggered from the **/admin** page.
 
+## Casting to a TV
+
+On the watch screen, a **Cast** button appears when a Google Cast device (Chromecast / Google TV) is on the
+network. Casting **sends the file to the device**, which decodes it directly — the page's play/pause/seek then
+control the TV, and progress still resumes where you left off. This avoids Chrome's fallback of mirroring the
+whole tab (a live re-encode on your computer), which is what stops "due to poor quality" when the machine can't
+keep up.
+
+Two things to know:
+
+- **Open the app by its LAN address** (e.g. `http://192.168.1.50:3000`), not `localhost` — the Chromecast has
+  to fetch the video from your server, and it can't reach `localhost`. The player shows a hint if you're on
+  `localhost`.
+- The device still has to be able to **decode the file**. Chromecast handles H.264/AAC MP4 up to 1080p natively;
+  4K or HEVC/H.265 may fail — convert those with the **Convert** tool (below) first. Works from desktop/Android
+  Chrome; iOS Safari has no Google Cast.
+
 ## Admin page
 
 `/admin` (no auth — intended for a trusted LAN) lets you:

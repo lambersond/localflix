@@ -4,6 +4,7 @@ import VideoPlayer from "@/app/components/common/VideoPlayer";
 import { getWatchMeta, getWatchProgress } from "@/db/queries";
 import { parsePlayableId } from "@/lib/media";
 import { getActiveProfileId } from "@/lib/profile";
+import { tmdbImage } from "@/lib/tmdb-image";
 
 export default async function WatchPage({
   params,
@@ -34,6 +35,8 @@ export default async function WatchPage({
       backHref={meta.backHref}
       playableId={id}
       resumeSeconds={resumeSeconds}
+      castContentType={meta.mimeType ?? "video/mp4"}
+      posterUrl={tmdbImage(meta.posterPath)}
     />
   );
 }
