@@ -6,9 +6,11 @@ import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import {
   assignUntrackedMatchAction,
   findBrokenLinksAction,
+  findDuplicateMoviesAction,
   findUntrackedFilesAction,
   listOpenReportsAction,
   matchMovieToTvAction,
+  mergeDuplicateMoviesAction,
   rematchTitleAction,
   removeBrokenLinksAction,
   resolveReportAction,
@@ -20,9 +22,11 @@ import {
   triggerScanAction,
   triggerTranscodeAction,
 } from "@/app/actions/admin";
-import type { BrokenLink, LibraryMatch, OpenReport } from "@/db/queries";
+import type { BrokenLink, DuplicateGroup, LibraryMatch, OpenReport } from "@/db/queries";
 import { tmdbImage } from "@/lib/tmdb-image";
 import type { UntrackedFile, UntrackedReason, UntrackedResult } from "@/lib/untracked";
+
+import ProgressBar from "@/app/components/common/ProgressBar";
 
 import MovieVersionsEditor from "./MovieVersionsEditor";
 import TmdbMatchPicker from "./TmdbMatchPicker";
@@ -82,7 +86,14 @@ interface CurrentJob {
   finishedAt: string | null;
   log: string[];
   summary: string | null;
+  progress: { phase: "movies" | "shows" | "artwork"; done: number; total: number } | null;
 }
+
+const PHASE_LABEL: Record<"movies" | "shows" | "artwork", string> = {
+  movies: "Scanning movies",
+  shows: "Scanning shows",
+  artwork: "Caching artwork",
+};
 
 export interface AdminStatus {
   current: CurrentJob | null;
@@ -270,6 +281,9 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
   const [versionsKey, setVersionsKey] = useState<string | null>(null); // open versions editor
   const libKey = (m: LibraryMatch) => `${m.kind}-${m.id}`;
   const [reports, setReports] = useState<OpenReport[] | null>(null);
+  // Duplicate-movie cleanup: which record survives each group (by filePath).
+  const [dupes, setDupes] = useState<DuplicateGroup[] | null>(null);
+  const [keepByPath, setKeepByPath] = useState<Record<string, number>>({});
 
   function onAssignUntracked(file: UntrackedFile, tmdbId: number) {
     setApplying(true);
@@ -336,6 +350,39 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
       if (res.ok) {
         setTvKey(null);
         setLibResults(await searchLibraryTitlesAction(libQuery));
+        await refresh();
+      }
+    });
+  }
+
+  function onFindDuplicates() {
+    startTransition(async () => {
+      const found = await findDuplicateMoviesAction();
+      setDupes(found);
+      // Default to keeping the oldest record in each group (lowest id).
+      setKeepByPath(Object.fromEntries(found.map((g) => [g.filePath, g.movies[0].id])));
+    });
+  }
+
+  function onMergeDuplicates(group: DuplicateGroup) {
+    const survivorId = keepByPath[group.filePath] ?? group.movies[0].id;
+    const survivor = group.movies.find((m) => m.id === survivorId);
+    const loserIds = group.movies.filter((m) => m.id !== survivorId).map((m) => m.id);
+    if (loserIds.length === 0) return;
+    if (
+      !window.confirm(
+        `Keep "${survivor?.title ?? "this record"}" and remove ${loserIds.length} other record(s) pointing at the same file? Watch progress and My List entries will be carried over automatically.`,
+      )
+    ) {
+      return;
+    }
+    setApplying(true);
+    startTransition(async () => {
+      const res = await mergeDuplicateMoviesAction({ survivorId, loserIds });
+      setApplying(false);
+      setMessage(res.message);
+      if (res.ok) {
+        setDupes(await findDuplicateMoviesAction());
         await refresh();
       }
     });
@@ -763,6 +810,87 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
         )}
       </section>
 
+      {/* Duplicate movie records (two rows pointing at one file) */}
+      <section className="flex flex-col gap-3 rounded-lg bg-surface/50 p-5">
+        <h2 className="text-lg font-semibold">Duplicate movies</h2>
+        <p className="text-sm text-muted">
+          Find movie records that point at the same file, then keep the correct one. Watch progress
+          and My List entries are carried over to the record you keep.
+        </p>
+        <div>
+          <button
+            type="button"
+            disabled={pending || running}
+            onClick={onFindDuplicates}
+            className={BUTTON_CLASS}
+          >
+            Find duplicates
+          </button>
+        </div>
+
+        {dupes !== null && dupes.length === 0 && (
+          <p className="text-sm text-green-400">No duplicate records — every file has one record.</p>
+        )}
+
+        {dupes !== null && dupes.length > 0 && (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-muted">
+              {dupes.length} file(s) with more than one record.
+            </p>
+            {dupes.map((group) => {
+              const keepId = keepByPath[group.filePath] ?? group.movies[0].id;
+              return (
+                <div key={group.filePath} className="flex flex-col gap-2 rounded bg-black/30 p-3">
+                  <span className="break-all font-mono text-[11px] text-muted/70">
+                    {group.filePath}
+                  </span>
+                  <ul className="flex flex-col gap-1">
+                    {group.movies.map((m) => (
+                      <li key={m.id}>
+                        <label className="flex cursor-pointer items-center gap-3 rounded p-2 transition hover:bg-white/5">
+                          <input
+                            type="radio"
+                            name={`keep-${group.filePath}`}
+                            className="cursor-pointer"
+                            checked={keepId === m.id}
+                            onChange={() =>
+                              setKeepByPath((prev) => ({ ...prev, [group.filePath]: m.id }))
+                            }
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="flex items-center gap-2">
+                              <span className={CHIP_CLASS}>tmdb {m.tmdbId}</span>
+                              <span className="truncate text-sm font-medium text-foreground">
+                                {m.title}
+                                {m.year ? ` (${m.year})` : ""}
+                              </span>
+                            </span>
+                            <span className="block text-[11px] text-muted/70">
+                              record #{m.id}
+                              {m.createdAt ? ` · added ${fmt(m.createdAt)}` : ""}
+                            </span>
+                          </span>
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                  <div>
+                    <button
+                      type="button"
+                      className={SECONDARY_BUTTON_CLASS}
+                      disabled={applying || pending}
+                      onClick={() => onMergeDuplicates(group)}
+                    >
+                      Keep selected &amp; remove {group.movies.length - 1} other(s)
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
       {/* Reported items (viewer-flagged incorrect metadata) */}
       <section className="flex flex-col gap-3 rounded-lg bg-surface/50 p-5">
         <h2 className="text-lg font-semibold">
@@ -823,6 +951,22 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
             </span>
           </h2>
           <p className="text-xs text-muted">started {fmt(status.current.startedAt)}</p>
+          {status.current.progress && status.current.progress.total > 0 && (
+            <div className="flex flex-col gap-1">
+              <p className="text-sm text-muted">
+                {PHASE_LABEL[status.current.progress.phase]}… {status.current.progress.done}/
+                {status.current.progress.total} (
+                {Math.round(
+                  (status.current.progress.done / status.current.progress.total) * 100,
+                )}
+                %)
+              </p>
+              <ProgressBar
+                fraction={status.current.progress.done / status.current.progress.total}
+                className="w-full overflow-hidden rounded-full"
+              />
+            </div>
+          )}
           {status.current.log.length > 0 && (
             <pre
               ref={logRef}

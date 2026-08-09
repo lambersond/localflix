@@ -120,17 +120,25 @@ export async function cacheArtwork(db: DB, log: Logger): Promise<ArtworkSummary>
   }
 
   log(`Caching ${refs.length} artwork file(s) to ${IMAGE_DIR}…`);
+  let processed = 0;
   for (const { path, kind } of refs) {
+    processed += 1;
+    const progress = { phase: "artwork" as const, done: processed, total: refs.length };
     const file = localFileFor(path);
     if (file && existsSync(file)) {
       summary.skipped += 1;
+      // Cached hits are silent, but the bar should still advance.
+      if (processed % 25 === 0 || processed === refs.length) {
+        log(`  … ${processed}/${refs.length} artwork file(s) checked.`, progress);
+      }
       continue;
     }
     try {
       await ensureImage(path, SIZE_BY_KIND[kind]);
       summary.downloaded += 1;
+      log(`  ↓ ${path}`, progress);
     } catch (err) {
-      log(`  ⚠ failed: ${path} — ${err instanceof Error ? err.message : err}`);
+      log(`  ⚠ failed: ${path} — ${err instanceof Error ? err.message : err}`, progress);
       summary.failed += 1;
     }
   }

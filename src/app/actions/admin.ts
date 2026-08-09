@@ -6,6 +6,7 @@ import {
   AUTO_SCAN_ENABLED_KEY,
   CACHE_ARTWORK_ON_SCAN_KEY,
   findBrokenLinks,
+  findDuplicateMovies,
   getMovieVersions,
   INCLUDE_NON_PLAYABLE_KEY,
   listOpenReports,
@@ -14,6 +15,7 @@ import {
   searchLibraryTitles,
   setSetting,
   type BrokenLink,
+  type DuplicateGroup,
   type LibraryMatch,
   type MovieVersion,
   type OpenReport,
@@ -30,6 +32,7 @@ import {
   assignUntrackedMatch,
   listMovieVersionCandidates,
   matchMovieToTv,
+  mergeDuplicateMovies,
   rematchTitle,
   removeMovieVersion,
   setPrimaryVersion,
@@ -225,6 +228,21 @@ export async function setPrimaryVersionAction(input: {
   versionId: number;
 }): Promise<RetagResult> {
   const result = setPrimaryVersion(input);
+  if (result.ok) revalidatePath("/admin");
+  return result;
+}
+
+/** Movie records that share a file — the residue of the old duplicate-scan bug. */
+export async function findDuplicateMoviesAction(): Promise<DuplicateGroup[]> {
+  return findDuplicateMovies();
+}
+
+/** Keep one record of a duplicate group and remove the others. */
+export async function mergeDuplicateMoviesAction(input: {
+  survivorId: number;
+  loserIds: number[];
+}): Promise<RetagResult> {
+  const result = mergeDuplicateMovies(input);
   if (result.ok) revalidatePath("/admin");
   return result;
 }

@@ -8,6 +8,13 @@
 
 export type JobKind = "scan" | "transcode" | "artwork";
 
+/** Latest phase/counts reported by a running job, for the admin progress bar. */
+export interface JobProgress {
+  phase: "movies" | "shows" | "artwork";
+  done: number;
+  total: number;
+}
+
 export interface JobState {
   kind: JobKind;
   status: "running" | "success" | "error";
@@ -15,6 +22,7 @@ export interface JobState {
   finishedAt: string | null;
   log: string[];
   summary: string | null;
+  progress: JobProgress | null;
 }
 
 const globalForJobs = globalThis as unknown as {

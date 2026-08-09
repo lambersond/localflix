@@ -43,6 +43,7 @@ export function triggerJob(
     finishedAt: null,
     log: [],
     summary: null,
+    progress: null,
   };
   setCurrentJob(state);
 
@@ -55,10 +56,12 @@ export function triggerJob(
   // Every line is written to a timestamped log file (full, uncapped) and to the
   // in-memory buffer the live panel reads (capped for memory).
   const jobLog = openJobLog(kind, startedAt);
-  const log: Logger = (line) => {
+  const log: Logger = (line, progress) => {
     jobLog.write(line);
     state.log.push(line);
     if (state.log.length > MAX_LOG_LINES) state.log.shift();
+    // Keep the last reported phase/counts; header and summary lines carry none.
+    if (progress) state.progress = progress;
   };
   log(`→ log file: ${jobLog.path}`);
 
@@ -73,6 +76,7 @@ export function triggerJob(
       state.summary = msg;
     } finally {
       state.finishedAt = new Date().toISOString();
+      state.progress = null; // no stale bar on a finished run
       jobLog.close();
       // Record which log file holds this run, so the panel can point at it.
       const summary = `${state.summary ?? ""} · log: ${basename(jobLog.path)}`.replace(/^ · /, "");

@@ -565,3 +565,206 @@ export function setPrimaryVersion(input: { movieId: number; versionId: number })
   });
   return { ok: true, message: `"${version.label}" is now the default version.` };
 }
+
+// ── Duplicate movie records (same file, two rows) ──
+
+/**
+ * Merge duplicate movie records that point at the same file: keep `survivorId`,
+ * delete the rest. Watch progress and My-List membership are carried over first
+ * so nothing a viewer did is lost — for progress the more-advanced row wins
+ * (completed beats in-progress, then furthest position), mirroring how
+ * `getLatestMovieProgress` picks across versions.
+ */
+export function mergeDuplicateMovies(input: {
+  survivorId: number;
+  loserIds: number[];
+}): RetagResult {
+  const survivor = db
+    .select({ id: schema.movies.id, title: schema.movies.title })
+    .from(schema.movies)
+    .where(eq(schema.movies.id, input.survivorId))
+    .get();
+  if (!survivor) return { ok: false, message: "That record is no longer in the library." };
+
+  const loserIds = input.loserIds.filter((id) => id !== input.survivorId);
+  if (loserIds.length === 0) return { ok: false, message: "Nothing to merge." };
+
+  const losers = db
+    .select({ id: schema.movies.id })
+    .from(schema.movies)
+    .where(inArray(schema.movies.id, loserIds))
+    .all();
+  if (losers.length === 0) return { ok: false, message: "Those records are already gone." };
+
+  let progressMoved = 0;
+  let listMoved = 0;
+  let versionsMoved = 0;
+
+  const survivorPrimary = db
+    .select({ filePath: schema.movies.filePath })
+    .from(schema.movies)
+    .where(eq(schema.movies.id, input.survivorId))
+    .get();
+
+  db.transaction((tx) => {
+    for (const loser of losers) {
+      // Re-parent the loser's extra file versions to the survivor. Updating in
+      // place keeps each media_files id, so any watch progress carried below
+      // (whose versionId *is* that id) still resolves to a real file. Without
+      // this the deleteMovieById would drop those files from the library and
+      // strand their progress rows.
+      const retainedVersionIds = new Set<number>();
+      const loserVersions = tx
+        .select({
+          id: schema.mediaFiles.id,
+          filePath: schema.mediaFiles.filePath,
+        })
+        .from(schema.mediaFiles)
+        .where(
+          and(
+            eq(schema.mediaFiles.mediaType, "movie"),
+            eq(schema.mediaFiles.mediaId, loser.id),
+          ),
+        )
+        .all();
+
+      for (const lv of loserVersions) {
+        const abs = resolve(lv.filePath);
+        // Drop it if the survivor already plays that exact file (as its primary
+        // or as one of its own versions) — otherwise it'd be a duplicate entry.
+        const clashesWithPrimary =
+          !!survivorPrimary && resolve(survivorPrimary.filePath) === abs;
+        const survivorVersions = tx
+          .select({ filePath: schema.mediaFiles.filePath })
+          .from(schema.mediaFiles)
+          .where(
+            and(
+              eq(schema.mediaFiles.mediaType, "movie"),
+              eq(schema.mediaFiles.mediaId, input.survivorId),
+            ),
+          )
+          .all();
+        const clashesWithVersion = survivorVersions.some(
+          (sv) => resolve(sv.filePath) === abs,
+        );
+        if (clashesWithPrimary || clashesWithVersion) continue; // deleted with the loser
+
+        tx.update(schema.mediaFiles)
+          .set({ mediaId: input.survivorId })
+          .where(eq(schema.mediaFiles.id, lv.id))
+          .run();
+        retainedVersionIds.add(lv.id);
+        versionsMoved++;
+      }
+
+      // Watch progress: per profile+version, keep whichever row is further along.
+      const loserProgress = tx
+        .select()
+        .from(schema.watchProgress)
+        .where(
+          and(
+            eq(schema.watchProgress.playableKind, "movie"),
+            eq(schema.watchProgress.playableId, loser.id),
+          ),
+        )
+        .all();
+
+      for (const lp of loserProgress) {
+        // Only carry progress that still points at a playable file: the primary
+        // (versionId 0) or a version we just re-parented.
+        if (lp.versionId !== 0 && !retainedVersionIds.has(lp.versionId)) continue;
+        const existing = tx
+          .select()
+          .from(schema.watchProgress)
+          .where(
+            and(
+              eq(schema.watchProgress.profileId, lp.profileId),
+              eq(schema.watchProgress.playableKind, "movie"),
+              eq(schema.watchProgress.playableId, input.survivorId),
+              eq(schema.watchProgress.versionId, lp.versionId),
+            ),
+          )
+          .get();
+
+        const loserWins =
+          !existing ||
+          (lp.completed === 1 && existing.completed !== 1) ||
+          (lp.completed === existing.completed && lp.positionSeconds > existing.positionSeconds);
+        if (!loserWins) continue;
+
+        if (existing) {
+          tx.update(schema.watchProgress)
+            .set({
+              positionSeconds: lp.positionSeconds,
+              durationSeconds: lp.durationSeconds,
+              completed: lp.completed,
+              updatedAt: sql`(CURRENT_TIMESTAMP)`,
+            })
+            .where(eq(schema.watchProgress.id, existing.id))
+            .run();
+        } else {
+          tx.insert(schema.watchProgress)
+            .values({
+              profileId: lp.profileId,
+              playableKind: "movie",
+              playableId: input.survivorId,
+              versionId: lp.versionId,
+              positionSeconds: lp.positionSeconds,
+              durationSeconds: lp.durationSeconds,
+              completed: lp.completed,
+            })
+            .run();
+        }
+        progressMoved++;
+      }
+
+      // My List: if a profile had the loser listed, make sure the survivor is.
+      const loserList = tx
+        .select({ profileId: schema.watchlist.profileId })
+        .from(schema.watchlist)
+        .where(
+          and(
+            eq(schema.watchlist.mediaType, "movie"),
+            eq(schema.watchlist.mediaId, loser.id),
+          ),
+        )
+        .all();
+      for (const entry of loserList) {
+        const already = tx
+          .select({ id: schema.watchlist.id })
+          .from(schema.watchlist)
+          .where(
+            and(
+              eq(schema.watchlist.profileId, entry.profileId),
+              eq(schema.watchlist.mediaType, "movie"),
+              eq(schema.watchlist.mediaId, input.survivorId),
+            ),
+          )
+          .get();
+        if (already) continue;
+        tx.insert(schema.watchlist)
+          .values({ profileId: entry.profileId, mediaType: "movie", mediaId: input.survivorId })
+          .onConflictDoNothing()
+          .run();
+        listMoved++;
+      }
+    }
+  });
+
+  for (const loser of losers) deleteMovieById(loser.id);
+
+  const scanner = createScanner(db, quiet);
+  scanner.rebuildRowFromDb("movie");
+  reindexSearch(db, quiet);
+
+  const carried = [
+    progressMoved > 0 ? `${progressMoved} watch position(s)` : null,
+    listMoved > 0 ? `${listMoved} My List entry(s)` : null,
+    versionsMoved > 0 ? `${versionsMoved} file version(s)` : null,
+  ].filter(Boolean);
+  const carriedMsg = carried.length > 0 ? ` Carried over ${carried.join(" and ")}.` : "";
+  return {
+    ok: true,
+    message: `Kept "${survivor.title}" and removed ${losers.length} duplicate record(s).${carriedMsg}`,
+  };
+}

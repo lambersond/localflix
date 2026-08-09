@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 
 import { and, asc, desc, eq, gt, gte, inArray, like, or, sql } from "drizzle-orm";
 
@@ -1909,4 +1910,64 @@ export function countOpenReports(): number {
   return (
     db.select({ n: sql<number>`count(*)` }).from(reports).where(eq(reports.status, "open")).get()?.n ?? 0
   );
+}
+
+// ── Admin: duplicate movie records ──
+
+export interface DuplicateMovie {
+  id: number;
+  tmdbId: number;
+  title: string;
+  year: string | null;
+  posterPath: string | null;
+  createdAt: string | null;
+}
+
+export interface DuplicateGroup {
+  filePath: string;
+  movies: DuplicateMovie[];
+}
+
+/**
+ * Movie records that share one file — the residue of a scan bug that re-derived
+ * a tracked file's identity and inserted a second row. Grouped by resolved path
+ * so the operator can keep the right record and drop the rest.
+ */
+export function findDuplicateMovies(): DuplicateGroup[] {
+  const rows = db
+    .select({
+      id: movies.id,
+      tmdbId: movies.tmdbId,
+      title: movies.title,
+      releaseDate: movies.releaseDate,
+      posterPath: movies.posterPath,
+      filePath: movies.filePath,
+      createdAt: movies.createdAt,
+    })
+    .from(movies)
+    .orderBy(asc(movies.id))
+    .all();
+
+  const byPath = new Map<string, DuplicateMovie[]>();
+  for (const r of rows) {
+    const key = resolve(r.filePath);
+    const entry: DuplicateMovie = {
+      id: r.id,
+      tmdbId: r.tmdbId,
+      title: r.title,
+      year: r.releaseDate ? r.releaseDate.slice(0, 4) : null,
+      posterPath: r.posterPath,
+      createdAt: r.createdAt,
+    };
+    const list = byPath.get(key);
+    if (list) list.push(entry);
+    else byPath.set(key, [entry]);
+  }
+
+  const groups: DuplicateGroup[] = [];
+  for (const [filePath, list] of byPath) {
+    if (list.length > 1) groups.push({ filePath, movies: list });
+  }
+  groups.sort((a, b) => a.filePath.localeCompare(b.filePath));
+  return groups;
 }

@@ -33,7 +33,19 @@ import {
 import { filterAvailableVideos } from "./youtube";
 
 export type DB = BetterSQLite3Database<typeof schema>;
-export type Logger = (line: string) => void;
+
+/** Coarse "how far along is this job" signal for the admin panel's progress bar. */
+export interface ScanProgress {
+  phase: "movies" | "shows" | "artwork";
+  done: number;
+  total: number;
+}
+
+/**
+ * Job logger. `progress` is optional so plain `(line) => console.log(line)`
+ * callers (the CLI script) still satisfy the type unchanged.
+ */
+export type Logger = (line: string, progress?: ScanProgress) => void;
 
 export interface MovieData {
   tmdbId: number;
@@ -78,6 +90,8 @@ export interface CollectionConfig {
 }
 
 const TOP_CAST = 15;
+/** Emit a progress heartbeat every N silently-skipped files. */
+const HEARTBEAT_EVERY = 25;
 
 /**
  * Build a scanner bound to a specific DB connection and logger. The CLI passes
@@ -491,6 +505,75 @@ export function createScanner(db: DB, log: Logger) {
   }
 
   /**
+   * Identity of already-tracked files, so a scan never re-derives it from the
+   * filename. Re-searching TMDB for a tracked file is what created duplicate
+   * rows: if the search resolved to a different id than the one stored (certain
+   * after a manual re-match, e.g. a movie pointed at a TV entry), the "already
+   * exists?" check — which looks up by the *fresh* id — missed the existing row
+   * and inserted a second one for the same file.
+   */
+  function loadMovieTmdbByPath(): Map<string, number> {
+    const map = new Map<string, number>();
+    for (const m of db
+      .select({ filePath: schema.movies.filePath, tmdbId: schema.movies.tmdbId })
+      .from(schema.movies)
+      .all()) {
+      map.set(resolve(m.filePath), m.tmdbId);
+    }
+    return map;
+  }
+
+  /**
+   * Resolved path of each extra (non-primary) movie version → the tmdbId of the
+   * movie that owns it. The owner is needed when skipping the file so the title
+   * still counts toward the rebuilt home rows (a movie whose primary file isn't
+   * in this scan — filtered out as non-playable, or gone from disk — would
+   * otherwise drop out of the "Movies" row entirely).
+   */
+  function loadVersionOwnerByPath(): Map<string, number> {
+    const map = new Map<string, number>();
+    for (const v of db
+      .select({ filePath: schema.mediaFiles.filePath, tmdbId: schema.movies.tmdbId })
+      .from(schema.mediaFiles)
+      .innerJoin(schema.movies, eq(schema.mediaFiles.mediaId, schema.movies.id))
+      .where(eq(schema.mediaFiles.mediaType, "movie"))
+      .all()) {
+      map.set(resolve(v.filePath), v.tmdbId);
+    }
+    return map;
+  }
+
+  /** Episode file path → the owning show's tmdbId, so shows skip `searchTv` too. */
+  function loadShowTmdbByEpisodePath(): Map<string, number> {
+    const map = new Map<string, number>();
+    for (const e of db
+      .select({ filePath: schema.episodes.filePath, tmdbId: schema.shows.tmdbId })
+      .from(schema.episodes)
+      .innerJoin(schema.seasons, eq(schema.episodes.seasonId, schema.seasons.id))
+      .innerJoin(schema.shows, eq(schema.seasons.showId, schema.shows.id))
+      .all()) {
+      map.set(resolve(e.filePath), e.tmdbId);
+    }
+    return map;
+  }
+
+  /**
+   * True when `filePath` already belongs to a movie row other than `exceptId`.
+   * Last-ditch guard against writing a second row for one file (there is no
+   * unique constraint on `movies.filePath`).
+   */
+  function moviePathOwnedByOther(filePath: string, exceptTmdbId: number): number | null {
+    const abs = resolve(filePath);
+    for (const m of db
+      .select({ tmdbId: schema.movies.tmdbId, filePath: schema.movies.filePath })
+      .from(schema.movies)
+      .all()) {
+      if (m.tmdbId !== exceptTmdbId && resolve(m.filePath) === abs) return m.tmdbId;
+    }
+    return null;
+  }
+
+  /**
    * Attach `file` as an additional version of an existing movie — or promote it
    * to primary when it's browser-playable and the current primary isn't (so the
    * default stream stays playable). De-duped by resolved path.
@@ -613,11 +696,52 @@ export function createScanner(db: DB, log: Logger) {
     let errors = 0;
     let skippedExisting = 0;
 
+    // Identity of files already tracked, so a rescan never re-derives it.
+    const tmdbByPath = loadMovieTmdbByPath();
+    const versionOwnerByPath = loadVersionOwnerByPath();
+    const total = files.length;
+    let processed = 0;
+
     for (const file of files) {
-      if (onlyNew && knownPaths.has(resolve(file))) {
+      processed++;
+      const progress: ScanProgress = { phase: "movies", done: processed, total };
+      const abs = resolve(file);
+
+      // An extra version of a tracked movie — nothing to resolve, but its owner
+      // still counts toward the home rows rebuilt from `matched` below.
+      const versionOwner = versionOwnerByPath.get(abs);
+      if (versionOwner !== undefined || (onlyNew && knownPaths.has(abs))) {
         skippedExisting++;
+        if (versionOwner !== undefined && !seen.has(versionOwner)) {
+          seen.add(versionOwner);
+          matched.push(versionOwner);
+        }
+        if (processed % HEARTBEAT_EVERY === 0 || processed === total) {
+          log(`  … ${processed}/${total} file(s) checked.`, progress);
+        }
         continue;
       }
+      // A file we already track is left completely alone — no TMDB lookup, no
+      // rewrite. Re-deriving identity from the filename is what inserted
+      // duplicate rows, and re-fetching by the stored id is unsafe too: a movie
+      // pointed at a TV entry (matchMovieToTv) would pull whatever unrelated
+      // movie happens to share that number. Manual fixes therefore survive
+      // rescans. Its id still counts toward the home rows rebuilt below.
+      const trackedTmdbId = tmdbByPath.get(abs);
+      if (trackedTmdbId !== undefined) {
+        skippedExisting++;
+        if (!seen.has(trackedTmdbId)) {
+          seen.add(trackedTmdbId);
+          matched.push(trackedTmdbId);
+        }
+        // Skips are silent, but the bar must still advance (on a rescan almost
+        // every file takes this path).
+        if (processed % HEARTBEAT_EVERY === 0 || processed === total) {
+          log(`  … ${processed}/${total} file(s) checked.`, progress);
+        }
+        continue;
+      }
+
       // Isolate each file so one bad title (or a TMDB hiccup) doesn't abort the run.
       try {
         const { title, year } = parseMovieFilename(file);
@@ -625,7 +749,7 @@ export function createScanner(db: DB, log: Logger) {
         let tmdbId = await searchMovie(title, year);
         if (!tmdbId && year) tmdbId = await searchMovie(title);
         if (!tmdbId) {
-          log(`  ✗ NO TMDB MATCH: "${title}"${yearLabel} — ${basename(file)}`);
+          log(`  ✗ NO TMDB MATCH: "${title}"${yearLabel} — ${basename(file)}`, progress);
           noMatch++;
           continue;
         }
@@ -638,17 +762,28 @@ export function createScanner(db: DB, log: Logger) {
           .where(eq(schema.movies.tmdbId, tmdbId))
           .get();
 
-        if (existing && resolve(existing.filePath) !== resolve(file)) {
+        if (existing && resolve(existing.filePath) !== abs) {
           const tag = attachMovieVersion(existing, file);
           if (tag !== "exists") {
-            log(`  ✓ version (${tag}) -> ${basename(file)} (movie id ${existing.id})`);
+            log(`  ✓ version (${tag}) -> ${basename(file)} (movie id ${existing.id})`, progress);
             versions++;
+            versionOwnerByPath.set(abs, tmdbId);
           }
+        } else if (!existing && moviePathOwnedByOther(file, tmdbId) !== null) {
+          // Guard: this path already belongs to another movie row, so importing
+          // would create a duplicate record for one file.
+          log(
+            `  ⚠ SKIPPED (already tracked under a different title): ${basename(file)}`,
+            progress,
+          );
+          skippedExisting++;
+          continue;
         } else {
           const info = await ingestMovieByTmdbId(tmdbId, file);
           const yr = info.releaseDate ? ` (${info.releaseDate.slice(0, 4)})` : "";
-          log(`  ✓ ${info.title}${yr} -> ${basename(file)} (id ${info.id})`);
+          log(`  ✓ ${info.title}${yr} -> ${basename(file)} (id ${info.id})`, progress);
           imported++;
+          tmdbByPath.set(abs, tmdbId);
         }
         if (!seen.has(tmdbId)) {
           seen.add(tmdbId);
@@ -656,13 +791,14 @@ export function createScanner(db: DB, log: Logger) {
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        log(`  ✗ TMDB ERROR: ${basename(file)} — ${msg}`);
+        log(`  ✗ TMDB ERROR: ${basename(file)} — ${msg}`, progress);
         errors++;
       }
     }
 
     const versionsMsg = versions > 0 ? ` · ${versions} version(s)` : "";
-    const existingMsg = onlyNew ? ` · ${skippedExisting} already-indexed` : "";
+    const existingMsg =
+      skippedExisting > 0 ? ` · ${skippedExisting} already-tracked (unchanged)` : "";
     log(
       `Movies: ${imported} imported${versionsMsg} · ${noMatch} no-match · ${errors} error(s)${existingMsg}`,
     );
@@ -701,6 +837,9 @@ export function createScanner(db: DB, log: Logger) {
     let errors = 0;
     let skippedShows = 0;
 
+    // Walk every show folder up front (once) so the total is known for progress
+    // and each folder's file list is reused below rather than walked twice.
+    const showEntries: { name: string; files: string[] }[] = [];
     for (const rootName of SHOW_ROOT_NAMES) {
       const showsRoot = join(root, rootName);
       let showDirs;
@@ -709,49 +848,73 @@ export function createScanner(db: DB, log: Logger) {
       } catch {
         continue; // no shows/ or tv/ folder
       }
-
       for (const showDir of showDirs) {
         if (!showDir.isDirectory() || showDir.name.startsWith(".")) continue;
+        const { kept, skipped } = filterFiles(
+          await walkVideos(join(showsRoot, showDir.name)),
+          includeNonPlayable,
+        );
+        if (skipped > 0) log(`  ⏭ skipped ${skipped} non-playable file(s) in ${showDir.name}.`);
+        if (kept.length === 0) continue;
+        showEntries.push({ name: showDir.name, files: kept });
+      }
+    }
 
-        // Isolate each show so one bad title (or a TMDB hiccup) doesn't abort the run.
-        try {
-          const { kept: files, skipped } = filterFiles(
-            await walkVideos(join(showsRoot, showDir.name)),
-            includeNonPlayable,
-          );
-          if (skipped > 0) log(`  ⏭ skipped ${skipped} non-playable file(s) in ${showDir.name}.`);
-          if (files.length === 0) continue;
+    const tmdbByEpisodePath = loadShowTmdbByEpisodePath();
+    const total = showEntries.length;
+    let processed = 0;
 
-          const episodes: { season: number; episode: number; filePath: string }[] = [];
-          for (const file of files) {
-            if (onlyNew && knownPaths.has(resolve(file))) continue; // already indexed
-            const parsed = parseEpisodeNumbers(file);
-            if (!parsed) {
-              log(`  ✗ NO SxxEyy: ${basename(file)}`);
-              continue;
-            }
-            episodes.push({ ...parsed, filePath: file });
+    for (const entry of showEntries) {
+      processed++;
+      const progress: ScanProgress = { phase: "shows", done: processed, total };
+
+      // Isolate each show so one bad title (or a TMDB hiccup) doesn't abort the run.
+      try {
+        // A show with any already-tracked episode file keeps its stored identity
+        // rather than re-resolving via `searchTv` (which could drift and insert
+        // a duplicate show, cascading duplicate seasons/episodes under it).
+        let trackedTmdbId: number | undefined;
+        for (const file of entry.files) {
+          const found = tmdbByEpisodePath.get(resolve(file));
+          if (found !== undefined) {
+            trackedTmdbId = found;
+            break;
           }
-          if (episodes.length === 0) {
-            if (onlyNew) skippedShows++; // no new episodes — skip TMDB entirely
+        }
+
+        const episodes: { season: number; episode: number; filePath: string }[] = [];
+        for (const file of entry.files) {
+          if (onlyNew && knownPaths.has(resolve(file))) continue; // already indexed
+          const parsed = parseEpisodeNumbers(file);
+          if (!parsed) {
+            log(`  ✗ NO SxxEyy: ${basename(file)}`, progress);
             continue;
           }
-
-          log(`Scanning show "${showDir.name}" (${episodes.length} episode file(s))…`);
-          const showId = await ingestShow({ searchTitle: showDir.name, episodes });
-          if (showId !== null) {
-            const show = db
-              .select({ tmdbId: schema.shows.tmdbId })
-              .from(schema.shows)
-              .where(eq(schema.shows.id, showId))
-              .get();
-            if (show) scannedTmdbIds.push(show.tmdbId);
-          }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          log(`  ✗ TMDB ERROR (show ${showDir.name}): ${msg}`);
-          errors++;
+          episodes.push({ ...parsed, filePath: file });
         }
+        if (episodes.length === 0) {
+          if (onlyNew) skippedShows++; // no new episodes — skip TMDB entirely
+          continue;
+        }
+
+        log(`Scanning show "${entry.name}" (${episodes.length} episode file(s))…`, progress);
+        const showId = await ingestShow(
+          trackedTmdbId !== undefined
+            ? { tmdbId: trackedTmdbId, episodes }
+            : { searchTitle: entry.name, episodes },
+        );
+        if (showId !== null) {
+          const show = db
+            .select({ tmdbId: schema.shows.tmdbId })
+            .from(schema.shows)
+            .where(eq(schema.shows.id, showId))
+            .get();
+          if (show) scannedTmdbIds.push(show.tmdbId);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`  ✗ TMDB ERROR (show ${entry.name}): ${msg}`, progress);
+        errors++;
       }
     }
 
