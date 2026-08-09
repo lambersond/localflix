@@ -1,8 +1,28 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { and, asc, desc, eq, gt, gte, inArray, like, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNull,
+  like,
+  notExists,
+  notInArray,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
+import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
 
+import {
+  KNOWN_RATING_CODES,
+  type ContentRules,
+} from "@/lib/content-rules";
 import {
   formatRuntime,
   isBrowserPlayable,
@@ -84,10 +104,194 @@ export interface HeroData {
   playableId: string | null;
 }
 
-/** Minimal lookup used by the streaming route handler. */
+// ---------------------------------------------------------------------------
+// Parental controls: visibility predicates
+//
+// Every viewer-facing query below takes a `ContentRules` and folds one of these
+// into its WHERE clause. They return `undefined` for an unrestricted profile,
+// so an adult profile runs byte-identical SQL to before this feature existed.
+// ---------------------------------------------------------------------------
+
+/**
+ * "This title's rating is allowed" for a certification column.
+ *
+ * Unrated is defined by exclusion — NULL, empty, or any code outside
+ * `KNOWN_RATING_CODES` (TMDB also emits `NR`, `UR`, `Unrated`, …) — so an
+ * unfamiliar rating is treated as unrated rather than slipping through.
+ */
+function certificationAllowedWhere(
+  column: SQLiteColumn,
+  rules: ContentRules,
+): SQL | undefined {
+  const allowedKnown = rules.allowedCertifications.filter((c) =>
+    KNOWN_RATING_CODES.includes(c),
+  );
+  const known = allowedKnown.length ? inArray(column, allowedKnown) : undefined;
+  if (!rules.allowUnrated) return known ?? sql`0 = 1`;
+
+  const unrated = or(
+    isNull(column),
+    eq(column, ""),
+    notInArray(column, KNOWN_RATING_CODES),
+  );
+  return known ? or(known, unrated) : unrated;
+}
+
+/** Titles carrying a blocked genre are hidden. */
+function genreAllowedWhere(
+  kind: "movie" | "show",
+  rules: ContentRules,
+): SQL | undefined {
+  if (rules.blockedGenreIds.length === 0) return undefined;
+  return kind === "movie"
+    ? notExists(
+        db
+          .select({ one: sql`1` })
+          .from(movieGenres)
+          .where(
+            and(
+              eq(movieGenres.movieId, movies.id),
+              inArray(movieGenres.genreId, rules.blockedGenreIds),
+            ),
+          ),
+      )
+    : notExists(
+        db
+          .select({ one: sql`1` })
+          .from(showGenres)
+          .where(
+            and(
+              eq(showGenres.showId, shows.id),
+              inArray(showGenres.genreId, rules.blockedGenreIds),
+            ),
+          ),
+      );
+}
+
+/** WHERE fragment restricting a query over `movies` to what `rules` allows. */
+function movieVisibleWhere(rules: ContentRules): SQL | undefined {
+  if (!rules.restricted) return undefined;
+  return and(
+    certificationAllowedWhere(movies.certification, rules),
+    genreAllowedWhere("movie", rules),
+  );
+}
+
+/** WHERE fragment restricting a query over `shows` to what `rules` allows. */
+function showVisibleWhere(rules: ContentRules): SQL | undefined {
+  if (!rules.restricted) return undefined;
+  return and(
+    certificationAllowedWhere(shows.certification, rules),
+    genreAllowedWhere("show", rules),
+  );
+}
+
+/** True when this exact title is visible to the profile. */
+export function isTitleVisible(
+  rules: ContentRules,
+  mediaType: "movie" | "show",
+  id: number,
+): boolean {
+  if (!rules.restricted) return true;
+  const row =
+    mediaType === "movie"
+      ? db
+          .select({ id: movies.id })
+          .from(movies)
+          .where(and(eq(movies.id, id), movieVisibleWhere(rules)))
+          .get()
+      : db
+          .select({ id: shows.id })
+          .from(shows)
+          .where(and(eq(shows.id, id), showVisibleWhere(rules)))
+          .get();
+  return row !== undefined;
+}
+
+/**
+ * True when a playable is visible. An episode inherits its show's rating and
+ * genres — TMDB only reports one certification per series.
+ */
+export function isPlayableVisible(rules: ContentRules, p: PlayableId): boolean {
+  if (!rules.restricted) return true;
+  if (p.kind === "movie") return isTitleVisible(rules, "movie", p.numericId);
+  const owner = db
+    .select({ showId: seasons.showId })
+    .from(episodes)
+    .innerJoin(seasons, eq(episodes.seasonId, seasons.id))
+    .where(eq(episodes.id, p.numericId))
+    .get();
+  return owner ? isTitleVisible(rules, "show", owner.showId) : false;
+}
+
+/**
+ * The same predicate as raw SQL, for the FTS5 search path (which can't be
+ * expressed with the query builder). Returns null when nothing is filtered.
+ *
+ * Filtering by subquery rather than by denormalizing the rating into
+ * `search_index` keeps the index automatically in sync with re-tagging and
+ * avoids a rebuild-on-upgrade path.
+ */
+function visibleFtsFragment(
+  rules: ContentRules,
+): { clause: string; params: unknown[] } | null {
+  if (!rules.restricted) return null;
+
+  const params: unknown[] = [];
+  const certClause = (table: "movies" | "shows"): string => {
+    const parts: string[] = [];
+    const allowedKnown = rules.allowedCertifications.filter((c) =>
+      KNOWN_RATING_CODES.includes(c),
+    );
+    if (allowedKnown.length) {
+      parts.push(`${table}.certification IN (${allowedKnown.map(() => "?").join(",")})`);
+      params.push(...allowedKnown);
+    }
+    if (rules.allowUnrated) {
+      parts.push(
+        `(${table}.certification IS NULL OR ${table}.certification = ''` +
+          ` OR ${table}.certification NOT IN (${KNOWN_RATING_CODES.map(() => "?").join(",")}))`,
+      );
+      params.push(...KNOWN_RATING_CODES);
+    }
+    return parts.length ? `(${parts.join(" OR ")})` : "0 = 1";
+  };
+  const genreClause = (table: "movies" | "shows"): string => {
+    if (rules.blockedGenreIds.length === 0) return "1 = 1";
+    const join = table === "movies" ? "movie_genres" : "show_genres";
+    const fk = table === "movies" ? "movie_id" : "show_id";
+    const holes = rules.blockedGenreIds.map(() => "?").join(",");
+    params.push(...rules.blockedGenreIds);
+    return `NOT EXISTS (SELECT 1 FROM ${join} g WHERE g.${fk} = ${table}.id AND g.genre_id IN (${holes}))`;
+  };
+
+  // Params must be pushed in the order the clauses appear in the final string.
+  const movieCert = certClause("movies");
+  const movieGenre = genreClause("movies");
+  const showCert = certClause("shows");
+  const showGenre = genreClause("shows");
+
+  return {
+    clause:
+      ` AND ((search_index.kind = 'movie' AND search_index.media_id IN` +
+      ` (SELECT movies.id FROM movies WHERE ${movieCert} AND ${movieGenre}))` +
+      ` OR (search_index.kind = 'show' AND search_index.media_id IN` +
+      ` (SELECT shows.id FROM shows WHERE ${showCert} AND ${showGenre})))`,
+    params,
+  };
+}
+
+/**
+ * Minimal lookup used by the streaming route handler.
+ *
+ * Null for a title the profile can't see, so a saved `/watch/m12` link (or a
+ * hand-typed stream URL) can't play past parental controls.
+ */
 export function getPlayableFile(
   p: PlayableId,
+  rules: ContentRules,
 ): { filePath: string; mimeType: string | null; title: string } | null {
+  if (!isPlayableVisible(rules, p)) return null;
   if (p.kind === "movie") {
     // A non-primary version streams from media_files; title stays the movie's.
     if (p.versionId > 0) {
@@ -149,7 +353,8 @@ export interface WatchMeta {
 }
 
 /** Display metadata for the watch page (title, back-link, + Cast poster/MIME). */
-export function getWatchMeta(p: PlayableId): WatchMeta | null {
+export function getWatchMeta(p: PlayableId, rules: ContentRules): WatchMeta | null {
+  if (!isPlayableVisible(rules, p)) return null;
   if (p.kind === "movie") {
     const row = db
       .select({
@@ -245,8 +450,14 @@ export function getMovieVersions(movieId: number): MovieVersion[] {
   return versions;
 }
 
+/**
+ * Resolve `{mediaType, mediaId}` pairs into cards, preserving the caller's
+ * order and silently dropping ids the profile can't see. Every row-shaped
+ * surface funnels through here, so the visibility filter covers them all.
+ */
 function cardsForItems(
   items: { mediaType: "movie" | "show"; mediaId: number }[],
+  rules: ContentRules,
 ): CardItem[] {
   const movieIds = items.filter((i) => i.mediaType === "movie").map((i) => i.mediaId);
   const showIds = items.filter((i) => i.mediaType === "show").map((i) => i.mediaId);
@@ -255,14 +466,14 @@ function cardsForItems(
     ? db
         .select({ id: movies.id, title: movies.title, posterPath: movies.posterPath })
         .from(movies)
-        .where(inArray(movies.id, movieIds))
+        .where(and(inArray(movies.id, movieIds), movieVisibleWhere(rules)))
         .all()
     : [];
   const showRows = showIds.length
     ? db
         .select({ id: shows.id, title: shows.name, posterPath: shows.posterPath })
         .from(shows)
-        .where(inArray(shows.id, showIds))
+        .where(and(inArray(shows.id, showIds), showVisibleWhere(rules)))
         .all()
     : [];
 
@@ -288,7 +499,7 @@ function cardsForItems(
 }
 
 /** All `row` collections, ordered, each with its ordered cards. */
-export function getRows(): RowData[] {
+export function getRows(rules: ContentRules): RowData[] {
   const rowCollections = db
     .select()
     .from(collections)
@@ -298,7 +509,7 @@ export function getRows(): RowData[] {
 
   return rowCollections
     .map((collection): RowData => {
-      const items = db
+      let q = db
         .select({
           mediaType: collectionItems.mediaType,
           mediaId: collectionItems.mediaId,
@@ -306,13 +517,15 @@ export function getRows(): RowData[] {
         .from(collectionItems)
         .where(eq(collectionItems.collectionId, collection.id))
         .orderBy(asc(collectionItems.position))
-        .limit(ROW_LIMIT)
-        .all();
+        .$dynamic();
+      // A restricted profile drops some of these, so take the whole row and cap
+      // after filtering — otherwise a row of 25 could render as 2 cards.
+      if (!rules.restricted) q = q.limit(ROW_LIMIT);
 
       return {
         slug: collection.slug,
         title: collection.title,
-        items: cardsForItems(items),
+        items: cardsForItems(q.all(), rules).slice(0, ROW_LIMIT),
         seeAllHref: SEE_ALL_BY_SLUG[collection.slug],
       };
     })
@@ -320,7 +533,7 @@ export function getRows(): RowData[] {
 }
 
 /** First item of the `hero` collection (falls back to the newest movie). */
-export function getHero(): HeroData | null {
+export function getHero(rules: ContentRules): HeroData | null {
   const heroCollection = db
     .select()
     .from(collections)
@@ -331,7 +544,8 @@ export function getHero(): HeroData | null {
   let pick: { mediaType: "movie" | "show"; mediaId: number } | undefined;
 
   if (heroCollection) {
-    pick = db
+    // The first hero item the profile is allowed to see, not simply the first.
+    const candidates = db
       .select({
         mediaType: collectionItems.mediaType,
         mediaId: collectionItems.mediaId,
@@ -339,17 +553,27 @@ export function getHero(): HeroData | null {
       .from(collectionItems)
       .where(eq(collectionItems.collectionId, heroCollection.id))
       .orderBy(asc(collectionItems.position))
-      .get();
+      .all();
+    pick = candidates.find((c) => isTitleVisible(rules, c.mediaType, c.mediaId));
   }
 
   if (!pick) {
-    const newest = db.select({ id: movies.id }).from(movies).orderBy(asc(movies.id)).get();
+    const newest = db
+      .select({ id: movies.id })
+      .from(movies)
+      .where(movieVisibleWhere(rules))
+      .orderBy(asc(movies.id))
+      .get();
     if (!newest) return null;
     pick = { mediaType: "movie", mediaId: newest.id };
   }
 
   if (pick.mediaType === "movie") {
-    const movie = db.select().from(movies).where(eq(movies.id, pick.mediaId)).get();
+    const movie = db
+      .select()
+      .from(movies)
+      .where(and(eq(movies.id, pick.mediaId), movieVisibleWhere(rules)))
+      .get();
     if (!movie) return null;
     return {
       mediaType: "movie",
@@ -361,7 +585,11 @@ export function getHero(): HeroData | null {
     };
   }
 
-  const show = db.select().from(shows).where(eq(shows.id, pick.mediaId)).get();
+  const show = db
+    .select()
+    .from(shows)
+    .where(and(eq(shows.id, pick.mediaId), showVisibleWhere(rules)))
+    .get();
   if (!show) return null;
   return {
     mediaType: "show",
@@ -476,8 +704,13 @@ export interface MovieDetail extends Movie {
   cast: CastMember[];
 }
 
-export function getMovieDetail(id: number): MovieDetail | null {
-  const movie = db.select().from(movies).where(eq(movies.id, id)).get();
+/** Null when the movie doesn't exist *or* the profile can't see it (both 404). */
+export function getMovieDetail(id: number, rules: ContentRules): MovieDetail | null {
+  const movie = db
+    .select()
+    .from(movies)
+    .where(and(eq(movies.id, id), movieVisibleWhere(rules)))
+    .get();
   if (!movie) return null;
   return {
     ...movie,
@@ -496,8 +729,13 @@ export interface ShowDetail extends Show {
   seasons: (Season & { episodes: Episode[] })[];
 }
 
-export function getShowDetail(id: number): ShowDetail | null {
-  const show = db.select().from(shows).where(eq(shows.id, id)).get();
+/** Null when the show doesn't exist *or* the profile can't see it (both 404). */
+export function getShowDetail(id: number, rules: ContentRules): ShowDetail | null {
+  const show = db
+    .select()
+    .from(shows)
+    .where(and(eq(shows.id, id), showVisibleWhere(rules)))
+    .get();
   if (!show) return null;
 
   const seasonRows = db
@@ -551,6 +789,7 @@ interface Candidate {
 export function getRelated(
   mediaType: "movie" | "show",
   id: number,
+  rules: ContentRules,
   limit = 12,
 ): CardItem[] {
   const keywordIds = (
@@ -637,7 +876,9 @@ export function getRelated(
 
   // Highest rated first; unrated (0) sinks to the bottom. Similarity breaks ties.
   candidates.sort((a, b) => b.voteAverage - a.voteAverage || b.score - a.score);
-  return cardsForItems(candidates.slice(0, limit));
+  // A restricted profile drops some candidates, so cap after filtering.
+  const ranked = rules.restricted ? candidates : candidates.slice(0, limit);
+  return cardsForItems(ranked, rules).slice(0, limit);
 }
 
 export interface CardPreview {
@@ -660,9 +901,14 @@ export function getCardPreview(
   mediaType: "movie" | "show",
   id: number,
   profileId: number | null,
+  rules: ContentRules,
 ): CardPreview | null {
   if (mediaType === "movie") {
-    const m = db.select().from(movies).where(eq(movies.id, id)).get();
+    const m = db
+      .select()
+      .from(movies)
+      .where(and(eq(movies.id, id), movieVisibleWhere(rules)))
+      .get();
     if (!m) return null;
     return {
       mediaType,
@@ -680,7 +926,11 @@ export function getCardPreview(
     };
   }
 
-  const s = db.select().from(shows).where(eq(shows.id, id)).get();
+  const s = db
+    .select()
+    .from(shows)
+    .where(and(eq(shows.id, id), showVisibleWhere(rules)))
+    .get();
   if (!s) return null;
   // A show has no single runtime; use the earliest episode's as representative.
   const firstEp = db
@@ -707,7 +957,7 @@ export function getCardPreview(
 }
 
 /** Newest movies and shows, interleaved by creation time. */
-export function getRecentlyAdded(limit = 20): CardItem[] {
+export function getRecentlyAdded(rules: ContentRules, limit = 20): CardItem[] {
   const movieRows = db
     .select({
       id: movies.id,
@@ -716,6 +966,7 @@ export function getRecentlyAdded(limit = 20): CardItem[] {
       createdAt: movies.createdAt,
     })
     .from(movies)
+    .where(movieVisibleWhere(rules))
     .orderBy(desc(movies.createdAt), desc(movies.id))
     .limit(limit)
     .all();
@@ -727,6 +978,7 @@ export function getRecentlyAdded(limit = 20): CardItem[] {
       createdAt: shows.createdAt,
     })
     .from(shows)
+    .where(showVisibleWhere(rules))
     .orderBy(desc(shows.createdAt), desc(shows.id))
     .limit(limit)
     .all();
@@ -767,15 +1019,20 @@ function decodeKeyset(cursor: string | null): { t: string; i: number } | null {
 }
 
 /** A page of movies, alphabetical, keyset-paginated by `(title, id)`. */
-export function getMoviesPage(cursor: string | null, limit = PAGE_SIZE): PageResult {
+export function getMoviesPage(
+  cursor: string | null,
+  rules: ContentRules,
+  limit = PAGE_SIZE,
+): PageResult {
   const c = decodeKeyset(cursor);
-  let q = db
+  const after = c
+    ? or(gt(movies.title, c.t), and(eq(movies.title, c.t), gt(movies.id, c.i)))
+    : undefined;
+  const q = db
     .select({ id: movies.id, title: movies.title, posterPath: movies.posterPath })
     .from(movies)
+    .where(and(after, movieVisibleWhere(rules)))
     .$dynamic();
-  if (c) {
-    q = q.where(or(gt(movies.title, c.t), and(eq(movies.title, c.t), gt(movies.id, c.i))));
-  }
   const rows = q.orderBy(asc(movies.title), asc(movies.id)).limit(limit).all();
   const last = rows.at(-1);
   return {
@@ -785,15 +1042,20 @@ export function getMoviesPage(cursor: string | null, limit = PAGE_SIZE): PageRes
 }
 
 /** A page of shows, alphabetical, keyset-paginated by `(name, id)`. */
-export function getShowsPage(cursor: string | null, limit = PAGE_SIZE): PageResult {
+export function getShowsPage(
+  cursor: string | null,
+  rules: ContentRules,
+  limit = PAGE_SIZE,
+): PageResult {
   const c = decodeKeyset(cursor);
-  let q = db
+  const after = c
+    ? or(gt(shows.name, c.t), and(eq(shows.name, c.t), gt(shows.id, c.i)))
+    : undefined;
+  const q = db
     .select({ id: shows.id, title: shows.name, posterPath: shows.posterPath })
     .from(shows)
+    .where(and(after, showVisibleWhere(rules)))
     .$dynamic();
-  if (c) {
-    q = q.where(or(gt(shows.name, c.t), and(eq(shows.name, c.t), gt(shows.id, c.i))));
-  }
   const rows = q.orderBy(asc(shows.name), asc(shows.id)).limit(limit).all();
   const last = rows.at(-1);
   return {
@@ -812,6 +1074,7 @@ export function getShowsPage(cursor: string | null, limit = PAGE_SIZE): PageResu
 export function searchLibraryPage(
   query: string,
   cursor: string | null,
+  rules: ContentRules,
   limit = PAGE_SIZE,
 ): PageResult {
   const match = toMatchQuery(query);
@@ -820,18 +1083,27 @@ export function searchLibraryPage(
   ensureSearchIndex(db);
   const offset = cursor ? Math.max(0, Number.parseInt(cursor, 10) || 0) : 0;
 
+  // Blocked titles are excluded inside the FTS query, so paging stays aligned:
+  // a page is short only at the end of the (already filtered) result set.
+  const visible = visibleFtsFragment(rules);
   const rows = db.$client
     .prepare(
       // One weight per column: title, cast_names, genres, keywords, kind, media_id.
       `SELECT kind, media_id AS mediaId FROM search_index
-         WHERE search_index MATCH ?
+         WHERE search_index MATCH ?${visible?.clause ?? ""}
          ORDER BY bm25(search_index, 10, 4, 2, 3, 0, 0)
          LIMIT ? OFFSET ?`,
     )
-    .all(match, limit, offset) as { kind: "movie" | "show"; mediaId: number }[];
+    .all(match, ...(visible?.params ?? []), limit, offset) as {
+    kind: "movie" | "show";
+    mediaId: number;
+  }[];
 
   // cardsForItems preserves the (ranked) input order.
-  const items = cardsForItems(rows.map((r) => ({ mediaType: r.kind, mediaId: r.mediaId })));
+  const items = cardsForItems(
+    rows.map((r) => ({ mediaType: r.kind, mediaId: r.mediaId })),
+    rules,
+  );
   return { items, nextCursor: rows.length === limit ? String(offset + limit) : null };
 }
 
@@ -849,6 +1121,15 @@ export function listProfiles(): Profile[] {
 
 export function getProfileById(id: number): Profile | undefined {
   return db.select().from(profiles).where(eq(profiles.id, id)).get();
+}
+
+/** Every genre in the library, alphabetical — drives the parental-controls UI. */
+export function listGenres(): { id: number; name: string }[] {
+  return db
+    .select({ id: genres.id, name: genres.name })
+    .from(genres)
+    .orderBy(asc(genres.name))
+    .all();
 }
 
 // ---------------------------------------------------------------------------
@@ -875,14 +1156,21 @@ export function isInWatchlist(
   );
 }
 
-export function getMyList(profileId: number, limit?: number): CardItem[] {
+export function getMyList(
+  profileId: number,
+  rules: ContentRules,
+  limit?: number,
+): CardItem[] {
   const base = db
     .select({ mediaType: watchlist.mediaType, mediaId: watchlist.mediaId })
     .from(watchlist)
     .where(eq(watchlist.profileId, profileId))
     .orderBy(desc(watchlist.addedAt));
-  const items = limit ? base.limit(limit).all() : base.all();
-  return cardsForItems(items);
+  // A title added before the profile was restricted must drop out of the list.
+  const items = limit && !rules.restricted ? base.limit(limit).all() : base.all();
+  return limit
+    ? cardsForItems(items, rules).slice(0, limit)
+    : cardsForItems(items, rules);
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,11 +1343,11 @@ function progressFraction(row: WatchProgress): number {
   return Math.min(Math.max(row.positionSeconds / row.durationSeconds, 0), 1);
 }
 
-function movieResumeCard(row: WatchProgress): ResumeCardItem | null {
+function movieResumeCard(row: WatchProgress, rules: ContentRules): ResumeCardItem | null {
   const m = db
     .select({ id: movies.id, title: movies.title, posterPath: movies.posterPath })
     .from(movies)
-    .where(eq(movies.id, row.playableId))
+    .where(and(eq(movies.id, row.playableId), movieVisibleWhere(rules)))
     .get();
   if (!m) return null;
   return {
@@ -1073,7 +1361,10 @@ function movieResumeCard(row: WatchProgress): ResumeCardItem | null {
   };
 }
 
-function episodeResumeCard(row: WatchProgress): ResumeCardItem | null {
+function episodeResumeCard(
+  row: WatchProgress,
+  rules: ContentRules,
+): ResumeCardItem | null {
   const e = db
     .select({
       epId: episodes.id,
@@ -1087,7 +1378,7 @@ function episodeResumeCard(row: WatchProgress): ResumeCardItem | null {
     .from(episodes)
     .innerJoin(seasons, eq(episodes.seasonId, seasons.id))
     .innerJoin(shows, eq(seasons.showId, shows.id))
-    .where(eq(episodes.id, row.playableId))
+    .where(and(eq(episodes.id, row.playableId), showVisibleWhere(rules)))
     .get();
   if (!e) return null;
   return {
@@ -1101,7 +1392,10 @@ function episodeResumeCard(row: WatchProgress): ResumeCardItem | null {
   };
 }
 
-export function getContinueWatching(profileId: number): ResumeCardItem[] {
+export function getContinueWatching(
+  profileId: number,
+  rules: ContentRules,
+): ResumeCardItem[] {
   const rows = db
     .select()
     .from(watchProgress)
@@ -1129,7 +1423,11 @@ export function getContinueWatching(profileId: number): ResumeCardItem[] {
   });
 
   return latestPerTitle
-    .map((r) => (r.playableKind === "movie" ? movieResumeCard(r) : episodeResumeCard(r)))
+    .map((r) =>
+      r.playableKind === "movie"
+        ? movieResumeCard(r, rules)
+        : episodeResumeCard(r, rules),
+    )
     .filter((c): c is ResumeCardItem => c !== null);
 }
 
@@ -1250,7 +1548,7 @@ export function getShowResume(profileId: number, showId: number): ShowResume {
 }
 
 /** Everything this profile has finished: completed movies + fully-watched shows. */
-export function getWatchedItems(profileId: number): CardItem[] {
+export function getWatchedItems(profileId: number, rules: ContentRules): CardItem[] {
   const movieRows = db
     .select({ id: watchProgress.playableId, updatedAt: watchProgress.updatedAt })
     .from(watchProgress)
@@ -1312,7 +1610,10 @@ export function getWatchedItems(profileId: number): CardItem[] {
       .map((c) => ({ mediaType: "show" as const, mediaId: c.showId, updatedAt: c.lastUpdated ?? "" })),
   ];
   merged.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  return cardsForItems(merged.map(({ mediaType, mediaId }) => ({ mediaType, mediaId })));
+  return cardsForItems(
+    merged.map(({ mediaType, mediaId }) => ({ mediaType, mediaId })),
+    rules,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1340,7 +1641,10 @@ function showsInProgress(profileId: number): Set<number> {
   );
 }
 
-function nextEpisodeUpNext(profileId: number): { item: ResumeCardItem; sortKey: string }[] {
+function nextEpisodeUpNext(
+  profileId: number,
+  rules: ContentRules,
+): { item: ResumeCardItem; sortKey: string }[] {
   const completedEps = db
     .select({
       showId: seasons.showId,
@@ -1395,7 +1699,7 @@ function nextEpisodeUpNext(profileId: number): { item: ResumeCardItem; sortKey: 
     const show = db
       .select({ name: shows.name, posterPath: shows.posterPath })
       .from(shows)
-      .where(eq(shows.id, showId))
+      .where(and(eq(shows.id, showId), showVisibleWhere(rules)))
       .get();
     if (!show) continue;
     out.push({
@@ -1414,7 +1718,10 @@ function nextEpisodeUpNext(profileId: number): { item: ResumeCardItem; sortKey: 
   return out;
 }
 
-function sequelUpNext(profileId: number): { item: ResumeCardItem; sortKey: string }[] {
+function sequelUpNext(
+  profileId: number,
+  rules: ContentRules,
+): { item: ResumeCardItem; sortKey: string }[] {
   const completedMovies = db
     .select({
       movieId: movies.id,
@@ -1470,7 +1777,13 @@ function sequelUpNext(profileId: number): { item: ResumeCardItem; sortKey: strin
         posterPath: movies.posterPath,
       })
       .from(movies)
-      .where(and(eq(movies.tmdbCollectionId, collectionId), gt(movies.releaseDate, cur.releaseDate)))
+      .where(
+        and(
+          eq(movies.tmdbCollectionId, collectionId),
+          gt(movies.releaseDate, cur.releaseDate),
+          movieVisibleWhere(rules),
+        ),
+      )
       .orderBy(asc(movies.releaseDate))
       .all();
     const sequel = candidates.find((s) => !completedIds.has(s.id) && !inProgressIds.has(s.id));
@@ -1491,8 +1804,11 @@ function sequelUpNext(profileId: number): { item: ResumeCardItem; sortKey: strin
   return out;
 }
 
-export function getUpNext(profileId: number): ResumeCardItem[] {
-  return [...nextEpisodeUpNext(profileId), ...sequelUpNext(profileId)]
+export function getUpNext(profileId: number, rules: ContentRules): ResumeCardItem[] {
+  return [
+    ...nextEpisodeUpNext(profileId, rules),
+    ...sequelUpNext(profileId, rules),
+  ]
     .sort((a, b) => b.sortKey.localeCompare(a.sortKey))
     .map((e) => e.item);
 }

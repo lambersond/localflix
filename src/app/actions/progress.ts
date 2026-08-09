@@ -2,9 +2,9 @@
 
 import { revalidatePath } from "next/cache";
 
-import { setCompleted } from "@/db/queries";
+import { isPlayableVisible, setCompleted } from "@/db/queries";
 import { parsePlayableId } from "@/lib/media";
-import { getActiveProfileId } from "@/lib/profile";
+import { getActiveProfileId, getContentRules } from "@/lib/profile";
 
 /**
  * Manually mark a playable (movie/episode) watched or unwatched for the active
@@ -20,6 +20,8 @@ export async function setWatchCompleted(
 
   const parsed = parsePlayableId(playableId);
   if (!parsed) return false;
+  // The toggle never renders for a blocked title, but the action is callable.
+  if (!isPlayableVisible(await getContentRules(), parsed)) return false;
 
   setCompleted(profileId, parsed, completed);
   revalidatePath("/", "layout");

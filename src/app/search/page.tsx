@@ -1,6 +1,7 @@
 import InfiniteGrid from "@/app/components/common/InfiniteGrid";
 import SearchBar from "@/app/components/common/SearchBar";
 import { searchLibraryPage, PAGE_SIZE } from "@/db/queries";
+import { getContentRules } from "@/lib/profile";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +13,7 @@ export default async function SearchPage({
   const { q } = await searchParams;
   const query = (q ?? "").trim();
   const first = query
-    ? searchLibraryPage(query, null, PAGE_SIZE)
+    ? searchLibraryPage(query, null, await getContentRules(), PAGE_SIZE)
     : { items: [], nextCursor: null };
 
   return (

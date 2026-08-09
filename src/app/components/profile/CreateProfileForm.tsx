@@ -7,7 +7,9 @@ import { AVATAR_HINT } from "@/lib/avatar";
 
 const initialState: ProfileFormState = {};
 
-export default function CreateProfileForm() {
+export default function CreateProfileForm({
+  showKidsOption = true,
+}: Readonly<{ showKidsOption?: boolean }>) {
   const [state, action, pending] = useActionState(createProfileAction, initialState);
 
   return (
@@ -29,6 +31,18 @@ export default function CreateProfileForm() {
           className="mt-1 block w-full text-sm text-muted file:mr-3 file:rounded file:border-0 file:bg-white/10 file:px-3 file:py-1.5 file:text-foreground hover:file:bg-white/20"
         />
       </label>
+      {showKidsOption ? (
+        <label className="flex items-start gap-2 text-sm cursor-pointer">
+          <input type="checkbox" name="isKids" className="mt-1" />
+          <span>
+            Kids profile
+            <span className="block text-xs text-muted">
+              Starts on G / PG and TV-Y–TV-PG only. Fine-tune it afterwards under
+              Parental controls.
+            </span>
+          </span>
+        </label>
+      ) : null}
       {state.error ? <p className="text-sm text-accent">{state.error}</p> : null}
       <button
         type="submit"

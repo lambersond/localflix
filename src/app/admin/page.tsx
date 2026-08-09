@@ -1,3 +1,5 @@
+import { notFound } from "next/navigation";
+
 import { db } from "@/db";
 import {
   countOpenReports,
@@ -10,12 +12,18 @@ import {
 } from "@/db/queries";
 import { countArtwork } from "@/lib/images";
 import { currentJob, nextScanAt } from "@/lib/job-state";
+import { getActiveProfile } from "@/lib/profile";
 
 import AdminPanel, { type AdminStatus } from "../components/admin/AdminPanel";
 
 export const dynamic = "force-dynamic";
 
-export default function AdminPage() {
+export default async function AdminPage() {
+  // The admin tools show (and can re-tag) the whole library, so a restricted
+  // profile can't have them — this URL is unlinked, not secret.
+  const profile = await getActiveProfile();
+  if (profile?.isKids === 1) notFound();
+
   const job = currentJob();
   const autoScanEnabled = getAutoScanEnabled();
   const initial: AdminStatus = {

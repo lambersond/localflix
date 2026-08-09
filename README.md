@@ -77,6 +77,26 @@ Two things to know:
   4K or HEVC/H.265 may fail — convert those with the **Convert** tool (below) first. Works from desktop/Android
   Chrome; iOS Safari has no Google Cast.
 
+## Profiles & parental controls
+
+Each viewer picks a profile from the "Who's watching?" screen; profiles keep their own watch progress and
+My List. On **Manage profiles** any profile can be marked a **Kids profile**, which limits it to the content
+ratings and genres you choose:
+
+- **Allowed ratings** — pick from the US movie scale (`G`, `PG`, `PG-13`, `R`, `NC-17`) and the US TV scale
+  (`TV-Y` … `TV-MA`). New kids profiles start at `G`/`PG` and `TV-Y`–`TV-PG`.
+- **Allow unrated titles** — off by default for kids. This covers anything TMDB has no rating for, *and* any
+  rating outside the lists above, so an unfamiliar rating is hidden rather than let through.
+- **Blocked genres** — hide whole genres regardless of rating. Nothing is blocked by default.
+
+Blocked titles are gone from every surface — home rows, Recently Added, Continue Watching, My List, browse,
+search, "More Like This", and hover previews — and a direct link to one (`/movie/123`, `/watch/m123`, or the
+stream URL itself) returns a plain 404. `/admin` is unavailable while a kids profile is active.
+
+**There is no PIN.** Like the rest of the app this trusts everyone on your LAN, so anyone at the device can
+switch back to a grown-up profile from the profile menu. Parental controls decide what a kids profile *can
+reach*, not who may use which profile.
+
 ## Admin page
 
 `/admin` (no auth — intended for a trusted LAN) lets you:

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getCardPreview } from "@/db/queries";
-import { getActiveProfileId } from "@/lib/profile";
+import { getActiveProfileId, getContentRules } from "@/lib/profile";
 
 // Reads the active profile cookie (for watchlist state), so never cache.
 export const runtime = "nodejs";
@@ -21,7 +21,8 @@ export async function GET(
   }
 
   const profileId = await getActiveProfileId();
-  const preview = getCardPreview(mediaType, numericId, profileId);
+  // A blocked title 404s here exactly as a missing one would.
+  const preview = getCardPreview(mediaType, numericId, profileId, await getContentRules());
   if (!preview) return new Response("Not found", { status: 404 });
 
   return NextResponse.json(preview);

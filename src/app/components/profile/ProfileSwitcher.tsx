@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { selectProfileAction } from "@/app/actions/profile";
 import type { Profile } from "@/db/schema";
 
+import KidsChip from "./KidsChip";
 import ProfileAvatar from "./ProfileAvatar";
 
 interface ProfileSwitcherProps {
@@ -58,6 +59,7 @@ export default function ProfileSwitcher({
               >
                 <ProfileAvatar profile={profile} size={24} />
                 <span className="truncate">{profile.name}</span>
+                {profile.isKids === 1 ? <KidsChip /> : null}
               </button>
             </form>
           ))}

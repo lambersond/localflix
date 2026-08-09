@@ -1,6 +1,6 @@
-import { recordProgress } from "@/db/queries";
+import { isPlayableVisible, recordProgress } from "@/db/queries";
 import { parsePlayableId } from "@/lib/media";
-import { getActiveProfileId } from "@/lib/profile";
+import { getActiveProfileId, getContentRules } from "@/lib/profile";
 
 // Needs the Node runtime (native sqlite). Fire-and-forget beacon target.
 export const runtime = "nodejs";
@@ -25,6 +25,10 @@ export async function POST(request: Request) {
 
   const parsed = typeof playableId === "string" ? parsePlayableId(playableId) : null;
   if (!parsed || typeof position !== "number" || !Number.isFinite(position)) {
+    return new Response(null, { status: 204 });
+  }
+  // Don't record a resume point a restricted profile could never open again.
+  if (!isPlayableVisible(await getContentRules(), parsed)) {
     return new Response(null, { status: 204 });
   }
 

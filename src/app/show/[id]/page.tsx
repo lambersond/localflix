@@ -13,7 +13,7 @@ import WatchedToggle from "@/app/components/profile/WatchedToggle";
 import WatchlistButton from "@/app/components/profile/WatchlistButton";
 import { getRelated, getShowDetail, getShowResume, isInWatchlist } from "@/db/queries";
 import { formatRuntime, releaseYear, toPlayableId } from "@/lib/media";
-import { getActiveProfileId } from "@/lib/profile";
+import { getActiveProfileId, getContentRules } from "@/lib/profile";
 import { tmdbImage } from "@/lib/tmdb";
 
 export const dynamic = "force-dynamic";
@@ -27,7 +27,10 @@ export default async function ShowPage({
   const showId = Number(id);
   if (!Number.isInteger(showId) || showId <= 0) notFound();
 
-  const show = getShowDetail(showId);
+  // Null for a title this profile isn't allowed to see, so parental controls
+  // land on the same 404 as a title that doesn't exist.
+  const rules = await getContentRules();
+  const show = getShowDetail(showId, rules);
   if (!show) notFound();
 
   const profileId = await getActiveProfileId();
@@ -49,7 +52,7 @@ export default async function ShowPage({
 
   const backdrop = tmdbImage(show.backdropPath);
   const year = releaseYear(show.firstAirDate);
-  const related = getRelated("show", show.id);
+  const related = getRelated("show", show.id, rules);
 
   return (
     <main className="flex flex-col">

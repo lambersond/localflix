@@ -7,6 +7,7 @@ import { createPortal } from "react-dom";
 import { selectProfileAction } from "@/app/actions/profile";
 import type { Profile } from "@/db/schema";
 
+import KidsChip from "../profile/KidsChip";
 import ProfileAvatar from "../profile/ProfileAvatar";
 
 interface NavLink {
@@ -126,6 +127,7 @@ export default function MobileMenu({
                 <div className="flex items-center gap-3 px-1 py-2">
                   <ProfileAvatar profile={activeProfile} size={40} />
                   <span className="font-medium">{activeProfile.name}</span>
+                  {activeProfile.isKids === 1 ? <KidsChip /> : null}
                 </div>
 
                 {others.length > 0 ? (
@@ -142,6 +144,7 @@ export default function MobileMenu({
                           <span className="truncate text-muted">
                             Switch to {profile.name}
                           </span>
+                          {profile.isKids === 1 ? <KidsChip /> : null}
                         </button>
                       </form>
                     ))}

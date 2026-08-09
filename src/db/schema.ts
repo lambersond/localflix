@@ -129,7 +129,12 @@ export const movieGenres = sqliteTable(
       .notNull()
       .references(() => genres.id, { onDelete: "cascade" }),
   },
-  (t) => [primaryKey({ columns: [t.movieId, t.genreId] })],
+  (t) => [
+    primaryKey({ columns: [t.movieId, t.genreId] }),
+    // Parental-control lookups go genre -> media, which the PK's leading column
+    // doesn't cover.
+    index("movie_genres_genre_idx").on(t.genreId),
+  ],
 );
 
 export const showGenres = sqliteTable(
@@ -142,7 +147,10 @@ export const showGenres = sqliteTable(
       .notNull()
       .references(() => genres.id, { onDelete: "cascade" }),
   },
-  (t) => [primaryKey({ columns: [t.showId, t.genreId] })],
+  (t) => [
+    primaryKey({ columns: [t.showId, t.genreId] }),
+    index("show_genres_genre_idx").on(t.genreId),
+  ],
 );
 
 /**
@@ -253,11 +261,26 @@ export const collectionItems = sqliteTable("collection_items", {
 
 /**
  * Viewing profiles (no auth). The active one is tracked via a cookie.
+ *
+ * The four parental-control columns only take effect when `isKids` is 1; an
+ * unrestricted profile (the default, and every pre-existing row) sees the whole
+ * library exactly as before. See `src/lib/content-rules.ts` for how they are
+ * interpreted.
  */
 export const profiles = sqliteTable("profiles", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   name: text("name").notNull(),
   avatarPath: text("avatar_path"),
+  /** 1 = a restricted ("kids") profile the columns below apply to. */
+  isKids: integer("is_kids").notNull().default(0),
+  /** Allowed content ratings, e.g. ["G","PG","TV-G"]. Null = none chosen yet. */
+  allowedCertifications: text("allowed_certifications", { mode: "json" }).$type<
+    string[]
+  >(),
+  /** 1 = titles with no (or an unrecognized) rating are still visible. */
+  allowUnrated: integer("allow_unrated").notNull().default(1),
+  /** TMDB genre ids hidden from this profile. Null / [] = nothing blocked. */
+  blockedGenreIds: text("blocked_genre_ids", { mode: "json" }).$type<number[]>(),
   createdAt: text("created_at").default(sql`(CURRENT_TIMESTAMP)`),
 });
 

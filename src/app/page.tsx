@@ -11,7 +11,7 @@ import {
   getRows,
   getUpNext,
 } from "@/db/queries";
-import { getActiveProfileId } from "@/lib/profile";
+import { getActiveProfileId, getContentRules } from "@/lib/profile";
 
 // Read the local library on every request so freshly-ingested content appears
 // without a rebuild.
@@ -19,12 +19,13 @@ export const dynamic = "force-dynamic";
 
 export default async function Home() {
   const profileId = await getActiveProfileId();
-  const hero = getHero();
-  const recentlyAdded = getRecentlyAdded();
-  const rows = getRows();
-  const continueWatching = profileId ? getContinueWatching(profileId) : [];
-  const upNext = profileId ? getUpNext(profileId) : [];
-  const myList = profileId ? getMyList(profileId, 25) : [];
+  const rules = await getContentRules();
+  const hero = getHero(rules);
+  const recentlyAdded = getRecentlyAdded(rules);
+  const rows = getRows(rules);
+  const continueWatching = profileId ? getContinueWatching(profileId, rules) : [];
+  const upNext = profileId ? getUpNext(profileId, rules) : [];
+  const myList = profileId ? getMyList(profileId, rules, 25) : [];
 
   if (!hero && rows.length === 0 && recentlyAdded.length === 0) {
     return <EmptyLibrary />;

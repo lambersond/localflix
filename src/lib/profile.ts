@@ -1,7 +1,9 @@
 import { cookies } from "next/headers";
+import { cache } from "react";
 
 import { getProfileById } from "@/db/queries";
 import type { Profile } from "@/db/schema";
+import { rulesForProfile, type ContentRules } from "@/lib/content-rules";
 
 export const ACTIVE_PROFILE_COOKIE = "active_profile";
 
@@ -23,3 +25,12 @@ export async function getActiveProfile(): Promise<Profile | null> {
   if (id === null) return null;
   return getProfileById(id) ?? null;
 }
+
+/**
+ * The parental-control rules for the active profile — the single source every
+ * viewer-facing query filters by. `cache` dedupes it per request, so the many
+ * call sites on a page cost one profile lookup between them.
+ */
+export const getContentRules = cache(async (): Promise<ContentRules> => {
+  return rulesForProfile(await getActiveProfile());
+});

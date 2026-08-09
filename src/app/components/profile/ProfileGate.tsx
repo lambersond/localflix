@@ -2,6 +2,7 @@ import { selectProfileAction } from "@/app/actions/profile";
 import type { Profile } from "@/db/schema";
 
 import CreateProfileForm from "./CreateProfileForm";
+import KidsChip from "./KidsChip";
 import ProfileAvatar from "./ProfileAvatar";
 
 export default function ProfileGate({ profiles }: Readonly<{ profiles: Profile[] }>) {
@@ -21,8 +22,9 @@ export default function ProfileGate({ profiles }: Readonly<{ profiles: Profile[]
                 <span className="transition group-hover:scale-105 group-focus-visible:ring-2 group-focus-visible:ring-white/60">
                   <ProfileAvatar profile={profile} size={112} />
                 </span>
-                <span className="text-muted transition group-hover:text-foreground">
+                <span className="flex items-center gap-2 text-muted transition group-hover:text-foreground">
                   {profile.name}
+                  {profile.isKids === 1 ? <KidsChip /> : null}
                 </span>
               </button>
             </form>

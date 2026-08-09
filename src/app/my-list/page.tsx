@@ -3,15 +3,16 @@ import Link from "next/link";
 import MediaGrid from "@/app/components/common/MediaGrid";
 import ResumeRow from "@/app/components/common/ResumeRow";
 import { getContinueWatching, getMyList, getWatchedItems } from "@/db/queries";
-import { getActiveProfileId } from "@/lib/profile";
+import { getActiveProfileId, getContentRules } from "@/lib/profile";
 
 export const dynamic = "force-dynamic";
 
 export default async function MyListPage() {
   const profileId = await getActiveProfileId();
-  const items = profileId ? getMyList(profileId) : [];
-  const inProgress = profileId ? getContinueWatching(profileId) : [];
-  const watched = profileId ? getWatchedItems(profileId) : [];
+  const rules = await getContentRules();
+  const items = profileId ? getMyList(profileId, rules) : [];
+  const inProgress = profileId ? getContinueWatching(profileId, rules) : [];
+  const watched = profileId ? getWatchedItems(profileId, rules) : [];
 
   return (
     // No horizontal padding on <main>: ResumeRow brings its own, and the grid

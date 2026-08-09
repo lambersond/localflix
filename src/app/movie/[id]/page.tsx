@@ -21,7 +21,7 @@ import {
   moviePlayState,
 } from "@/db/queries";
 import { formatRuntime, releaseYear, toPlayableId } from "@/lib/media";
-import { getActiveProfileId } from "@/lib/profile";
+import { getActiveProfileId, getContentRules } from "@/lib/profile";
 import { tmdbImage } from "@/lib/tmdb";
 
 export const dynamic = "force-dynamic";
@@ -35,12 +35,15 @@ export default async function MoviePage({
   const movieId = Number(id);
   if (!Number.isInteger(movieId) || movieId <= 0) notFound();
 
-  const movie = getMovieDetail(movieId);
+  // Null for a title this profile isn't allowed to see, so parental controls
+  // land on the same 404 as a title that doesn't exist.
+  const rules = await getContentRules();
+  const movie = getMovieDetail(movieId, rules);
   if (!movie) notFound();
 
   const profileId = await getActiveProfileId();
   const inList = profileId ? isInWatchlist(profileId, "movie", movie.id) : false;
-  const related = getRelated("movie", movie.id);
+  const related = getRelated("movie", movie.id, rules);
 
   // One playable option per file version; the hero + picker default to whichever
   // version was played most recently (else the primary).

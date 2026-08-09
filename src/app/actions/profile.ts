@@ -9,6 +9,7 @@ import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 
 import { db } from "@/db";
+import { listGenres } from "@/db/queries";
 import { profiles } from "@/db/schema";
 import {
   ALLOWED_AVATAR_TYPES,
@@ -16,7 +17,16 @@ import {
   MAX_AVATAR_MB,
 } from "@/lib/avatar";
 import { AVATAR_DIR, localAvatarFile } from "@/lib/avatar-store";
-import { ACTIVE_PROFILE_COOKIE, getActiveProfileId } from "@/lib/profile";
+import {
+  isUsableAllowance,
+  KIDS_DEFAULT_CERTIFICATIONS,
+  sanitizeCertifications,
+} from "@/lib/content-rules";
+import {
+  ACTIVE_PROFILE_COOKIE,
+  getActiveProfile,
+  getActiveProfileId,
+} from "@/lib/profile";
 
 export interface ProfileFormState {
   error?: string;
@@ -93,13 +103,81 @@ export async function createProfileAction(
     return { error: err instanceof Error ? err.message : "Avatar upload failed." };
   }
 
+  // A kids profile starts on the safe defaults; the parent tunes it afterwards.
+  const isKids = formData.get("isKids") === "on" ? 1 : 0;
   const row = db
     .insert(profiles)
-    .values({ name, avatarPath })
+    .values({
+      name,
+      avatarPath,
+      isKids,
+      allowedCertifications: isKids ? KIDS_DEFAULT_CERTIFICATIONS : null,
+      allowUnrated: isKids ? 0 : 1,
+      blockedGenreIds: [],
+    })
     .returning({ id: profiles.id })
     .get();
 
-  await setActiveCookie(row.id);
+  // Creating normally switches you to the new profile — but a parent setting up
+  // a kids profile shouldn't be dropped into it. Only switch when there's no
+  // active profile yet (i.e. this came from the "Who's watching?" gate).
+  if (!isKids || (await getActiveProfileId()) === null) {
+    await setActiveCookie(row.id);
+  }
+  revalidatePath("/", "layout");
+  return {};
+}
+
+/**
+ * useActionState: save one profile's parental controls.
+ *
+ * Refuses when the *active* profile is itself restricted, so a kids profile
+ * can't widen its own allowance from /profiles. Everything is re-validated
+ * server-side — the form is a convenience, not the authority.
+ */
+export async function updateParentalControlsAction(
+  _prev: ProfileFormState,
+  formData: FormData,
+): Promise<ProfileFormState> {
+  const active = await getActiveProfile();
+  if (active?.isKids === 1) {
+    return { error: "Switch to a grown-up profile to change parental controls." };
+  }
+
+  const id = Number(formData.get("profileId"));
+  if (!Number.isInteger(id)) return { error: "Profile not found." };
+  const existing = db.select().from(profiles).where(eq(profiles.id, id)).get();
+  if (!existing) return { error: "Profile not found." };
+
+  // Turning restrictions off keeps the saved allowance, so re-enabling later
+  // doesn't come back as "nothing allowed".
+  if (formData.get("isKids") !== "on") {
+    db.update(profiles).set({ isKids: 0 }).where(eq(profiles.id, id)).run();
+    revalidatePath("/", "layout");
+    return {};
+  }
+
+  const allowedCertifications = sanitizeCertifications(
+    formData.getAll("certifications").filter((v): v is string => typeof v === "string"),
+  );
+  const allowUnrated = formData.get("allowUnrated") === "on" ? 1 : 0;
+  if (!isUsableAllowance(allowedCertifications, allowUnrated === 1)) {
+    return {
+      error: "Allow at least one rating, or this profile would see nothing at all.",
+    };
+  }
+
+  const validGenreIds = new Set(listGenres().map((g) => g.id));
+  const blockedGenreIds = formData
+    .getAll("blockedGenres")
+    .map((v) => Number(v))
+    .filter((genreId) => validGenreIds.has(genreId));
+
+  db.update(profiles)
+    .set({ isKids: 1, allowedCertifications, allowUnrated, blockedGenreIds })
+    .where(eq(profiles.id, id))
+    .run();
+
   revalidatePath("/", "layout");
   return {};
 }

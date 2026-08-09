@@ -2,11 +2,12 @@ import Link from "next/link";
 
 import InfiniteGrid from "@/app/components/common/InfiniteGrid";
 import { getMoviesPage, PAGE_SIZE } from "@/db/queries";
+import { getContentRules } from "@/lib/profile";
 
 export const dynamic = "force-dynamic";
 
-export default function MoviesPage() {
-  const first = getMoviesPage(null, PAGE_SIZE);
+export default async function MoviesPage() {
+  const first = getMoviesPage(null, await getContentRules(), PAGE_SIZE);
 
   return (
     <main className="flex flex-col gap-6 px-4 pb-16 pt-20 sm:pt-24 sm:px-8">

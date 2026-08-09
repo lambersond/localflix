@@ -4,6 +4,7 @@ import { Readable } from "node:stream";
 
 import { getPlayableFile } from "@/db/queries";
 import { mimeTypeForFile, parsePlayableId } from "@/lib/media";
+import { getContentRules } from "@/lib/profile";
 
 // Needs the Node.js runtime (fs + native sqlite) and must never be cached —
 // responses are Range-specific binary streams.
@@ -27,12 +28,15 @@ interface ResolvedFile {
  * Resolve a playable id to an on-disk file. Re-stats at request time because
  * the file is the source of truth and may have changed since ingest.
  * Returns a Response (404) on any failure, or the resolved file.
+ *
+ * Parental controls are enforced here, not only on the pages that link here —
+ * this URL is guessable and gets bookmarked by the video element itself.
  */
 async function resolveFile(id: string): Promise<ResolvedFile | Response> {
   const parsed = parsePlayableId(id);
   if (!parsed) return new Response("Not found", { status: 404 });
 
-  const record = getPlayableFile(parsed);
+  const record = getPlayableFile(parsed, await getContentRules());
   if (!record) return new Response("Not found", { status: 404 });
 
   try {

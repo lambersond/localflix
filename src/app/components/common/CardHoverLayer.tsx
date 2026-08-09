@@ -11,6 +11,18 @@ const previewCache = new Map<string, CardPreviewData>();
 const OPEN_DELAY = 200;
 const CLOSE_DELAY = 120;
 
+/**
+ * Cache key. Includes the active profile because this Map is module-scoped and
+ * survives a profile switch (a client-side navigation), and previews carry
+ * per-profile data — My-List state, and visibility under parental controls.
+ * Mirrors `ACTIVE_PROFILE_COOKIE` in `@/lib/profile`, which is server-only.
+ */
+function cacheKey(mediaType: string | undefined, id: string | undefined): string {
+  const profile =
+    /(?:^|;\s*)active_profile=([^;]*)/.exec(document.cookie)?.[1] ?? "none";
+  return `${profile}:${mediaType}-${id}`;
+}
+
 interface HoverState {
   anchor: DOMRect;
   poster: string | null;
@@ -84,7 +96,7 @@ export default function CardHoverLayer({
       const card = (e.target as Element | null)?.closest?.("[data-card]") as HTMLElement | null;
       if (!card || !container.contains(card)) return;
       clearClose();
-      const key = `${card.dataset.mediaType}-${card.dataset.id}`;
+      const key = cacheKey(card.dataset.mediaType, card.dataset.id);
       if (key === currentKey.current) return; // already hovering this card
       clearOpen();
       openTimer.current = setTimeout(() => {

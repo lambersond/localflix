@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import VideoPlayer from "@/app/components/common/VideoPlayer";
 import { getWatchMeta, getWatchProgress } from "@/db/queries";
 import { parsePlayableId } from "@/lib/media";
-import { getActiveProfileId } from "@/lib/profile";
+import { getActiveProfileId, getContentRules } from "@/lib/profile";
 import { tmdbImage } from "@/lib/tmdb-image";
 
 export default async function WatchPage({
@@ -19,7 +19,7 @@ export default async function WatchPage({
   const parsed = parsePlayableId(id);
   if (!parsed) notFound();
 
-  const meta = getWatchMeta(parsed);
+  const meta = getWatchMeta(parsed, await getContentRules());
   if (!meta) notFound();
 
   const profileId = await getActiveProfileId();
