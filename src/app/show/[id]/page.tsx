@@ -8,6 +8,7 @@ import MediaRow from "@/app/components/common/MediaRow";
 import ReportButton from "@/app/components/common/ReportButton";
 import ProgressBar from "@/app/components/common/ProgressBar";
 import Rating from "@/app/components/common/Rating";
+import SeasonNav, { type SeasonNavItem } from "@/app/components/common/SeasonNav";
 import VideoGallery from "@/app/components/common/VideoGallery";
 import WatchedToggle from "@/app/components/profile/WatchedToggle";
 import WatchlistButton from "@/app/components/profile/WatchlistButton";
@@ -49,6 +50,24 @@ export default async function ShowPage({
       episodesSummary = `${resume.totalEpisodes} episodes`;
     }
   }
+
+  // The season index. Labels are derived once here so the rail and the <h2>
+  // headings can never drift apart, and only these four scalars cross the
+  // client boundary — passing the season rows would serialize every episode
+  // (overviews included) a second time into the RSC payload.
+  const seasonNav: SeasonNavItem[] = show.seasons.map((season) => ({
+    id: season.id,
+    label:
+      season.name ??
+      (season.tmdbSeasonNumber === 0 ? "Specials" : `Season ${season.tmdbSeasonNumber}`),
+    episodeCount: season.episodes.length,
+    // episodeProgress has no entry at all for an unwatched episode.
+    watchedCount: season.episodes.reduce(
+      (n, ep) => (resume.episodeProgress.get(ep.id)?.completed ? n + 1 : n),
+      0,
+    ),
+  }));
+  const seasonLabels = new Map(seasonNav.map((s) => [s.id, s.label]));
 
   const backdrop = tmdbImage(show.backdropPath);
   const year = releaseYear(show.firstAirDate);
@@ -131,72 +150,93 @@ export default async function ShowPage({
         {show.seasons.length === 0 ? (
           <p className="text-muted">No episodes available yet.</p>
         ) : (
-          show.seasons.map((season) => (
-            <section key={season.id} className="flex flex-col gap-3">
-              <h2 className="text-xl font-semibold">
-                {season.name ?? `Season ${season.tmdbSeasonNumber}`}
-              </h2>
-              <ul className="flex flex-col divide-y divide-white/10 overflow-hidden rounded-lg bg-surface/50">
-                {season.episodes.map((ep) => {
-                  const still = tmdbImage(ep.stillPath);
-                  const runtime = formatRuntime(ep.runtimeMinutes);
-                  const epProg = resume.episodeProgress.get(ep.id);
-                  return (
-                    <li key={ep.id}>
-                      <Link
-                        href={`/watch/${toPlayableId("episode", ep.id)}`}
-                        className="flex items-center gap-4 p-3 transition hover:bg-white/5"
-                      >
-                        <span className="w-6 shrink-0 text-center text-lg font-semibold text-muted">
-                          {ep.tmdbEpisodeNumber}
-                        </span>
-                        <div className="relative aspect-video w-32 shrink-0 overflow-hidden rounded bg-neutral-800">
-                          {still ? (
-                            <Image
-                              src={still}
-                              alt=""
-                              fill
-                              sizes="128px"
-                              className="object-cover"
-                            />
-                          ) : null}
-                          <span className="absolute inset-0 flex items-center justify-center text-2xl opacity-0 transition hover:opacity-100">
-                            ▶
-                          </span>
-                          {epProg && !epProg.completed ? (
-                            <ProgressBar
-                              fraction={epProg.fraction}
-                              className="absolute inset-x-0 bottom-0"
-                            />
-                          ) : null}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-baseline justify-between gap-2">
-                            <p className="truncate font-medium">
-                              {ep.name ?? `Episode ${ep.tmdbEpisodeNumber}`}
-                            </p>
-                            {runtime ? (
-                              <span className="shrink-0 text-xs text-muted">{runtime}</span>
-                            ) : null}
-                          </div>
-                          {ep.overview ? (
-                            <p className="line-clamp-2 text-sm text-muted">{ep.overview}</p>
-                          ) : null}
-                        </div>
-                        <div className="shrink-0">
-                          <WatchedToggle
-                            playableId={toPlayableId("episode", ep.id)}
-                            initialCompleted={epProg?.completed ?? false}
-                            variant="compact"
-                          />
-                        </div>
-                      </Link>
-                    </li>
-                  );
-                })}
-              </ul>
-            </section>
-          ))
+          <div className="flex flex-col gap-6 md:flex-row md:gap-8">
+            {/* A one-item index is noise, so single-season shows keep the
+                full-width layout. The anchors below exist either way. */}
+            {seasonNav.length > 1 ? <SeasonNav seasons={seasonNav} /> : null}
+            {/* min-w-0 is load-bearing: without it the truncating episode
+                titles blow the column past its share and push the rail out. */}
+            <div className="flex min-w-0 flex-1 flex-col gap-8">
+              {show.seasons.map((season) => (
+                <section
+                  key={season.id}
+                  id={`season-${season.id}`}
+                  aria-labelledby={`season-${season.id}-heading`}
+                  // Focusable so a jump moves focus with it; scroll-mt clears
+                  // the fixed navbar (plus the sticky strip on mobile) and is
+                  // also the single source of truth for the scroll-spy line.
+                  tabIndex={-1}
+                  className="flex scroll-mt-32 flex-col gap-3 outline-none ring-white/40 focus-visible:ring-2 md:scroll-mt-24"
+                >
+                  <h2
+                    id={`season-${season.id}-heading`}
+                    className="text-xl font-semibold"
+                  >
+                    {seasonLabels.get(season.id)}
+                  </h2>
+                  <ul className="flex flex-col divide-y divide-white/10 overflow-hidden rounded-lg bg-surface/50">
+                    {season.episodes.map((ep) => {
+                      const still = tmdbImage(ep.stillPath);
+                      const runtime = formatRuntime(ep.runtimeMinutes);
+                      const epProg = resume.episodeProgress.get(ep.id);
+                      return (
+                        <li key={ep.id}>
+                          <Link
+                            href={`/watch/${toPlayableId("episode", ep.id)}`}
+                            className="flex items-center gap-4 p-3 transition hover:bg-white/5"
+                          >
+                            <span className="w-6 shrink-0 text-center text-lg font-semibold text-muted">
+                              {ep.tmdbEpisodeNumber}
+                            </span>
+                            <div className="relative aspect-video w-32 shrink-0 overflow-hidden rounded bg-neutral-800">
+                              {still ? (
+                                <Image
+                                  src={still}
+                                  alt=""
+                                  fill
+                                  sizes="128px"
+                                  className="object-cover"
+                                />
+                              ) : null}
+                              <span className="absolute inset-0 flex items-center justify-center text-2xl opacity-0 transition hover:opacity-100">
+                                ▶
+                              </span>
+                              {epProg && !epProg.completed ? (
+                                <ProgressBar
+                                  fraction={epProg.fraction}
+                                  className="absolute inset-x-0 bottom-0"
+                                />
+                              ) : null}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-baseline justify-between gap-2">
+                                <p className="truncate font-medium">
+                                  {ep.name ?? `Episode ${ep.tmdbEpisodeNumber}`}
+                                </p>
+                                {runtime ? (
+                                  <span className="shrink-0 text-xs text-muted">{runtime}</span>
+                                ) : null}
+                              </div>
+                              {ep.overview ? (
+                                <p className="line-clamp-2 text-sm text-muted">{ep.overview}</p>
+                              ) : null}
+                            </div>
+                            <div className="shrink-0">
+                              <WatchedToggle
+                                playableId={toPlayableId("episode", ep.id)}
+                                initialCompleted={epProg?.completed ?? false}
+                                variant="compact"
+                              />
+                            </div>
+                          </Link>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </section>
+              ))}
+            </div>
+          </div>
         )}
 
         <VideoGallery videos={show.videos} title={show.name} />

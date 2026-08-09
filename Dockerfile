@@ -44,7 +44,7 @@ COPY --from=builder /app/drizzle ./drizzle
 # Mount points: /data (sqlite + cached artwork + uploaded avatars) and /media
 # (your library, NAS bind-mount). /data/avatars is served by the /avatars route,
 # so it persists via the /data volume — no separate public/ mount needed.
-RUN mkdir -p /data /data/images /data/avatars /media
+RUN mkdir -p /data /data/images /data/avatars /data/logs /media
 
 VOLUME ["/data", "/data/images", "/media"]
 EXPOSE 3000
