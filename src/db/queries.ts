@@ -2287,3 +2287,64 @@ export function findDuplicateMovies(): DuplicateGroup[] {
   groups.sort((a, b) => a.filePath.localeCompare(b.filePath));
   return groups;
 }
+
+// ── Admin: episode ↔ TMDB links ──
+
+export interface ShowEpisodeRecord {
+  id: number;
+  /** The row's own slot — what the filename says, and what decides list order. */
+  seasonNumber: number;
+  episodeNumber: number;
+  name: string | null;
+  stillPath: string | null;
+  filePath: string;
+  /** Operator-chosen metadata source; null on both when the row isn't linked. */
+  sourceSeason: number | null;
+  sourceEpisode: number | null;
+}
+
+/**
+ * A show's episode rows in display order, with their manual-link state — the
+ * list the admin panel edits. Deliberately unfiltered by content rules: like
+ * every other admin query this is the parent's tool and must see everything.
+ */
+export function listShowEpisodeRecords(showId: number): ShowEpisodeRecord[] {
+  return db
+    .select({
+      id: episodes.id,
+      seasonNumber: seasons.tmdbSeasonNumber,
+      episodeNumber: episodes.tmdbEpisodeNumber,
+      name: episodes.name,
+      stillPath: episodes.stillPath,
+      filePath: episodes.filePath,
+      sourceSeason: episodes.tmdbSourceSeason,
+      sourceEpisode: episodes.tmdbSourceEpisode,
+    })
+    .from(episodes)
+    .innerJoin(seasons, eq(episodes.seasonId, seasons.id))
+    .where(eq(seasons.showId, showId))
+    .orderBy(asc(seasons.tmdbSeasonNumber), asc(episodes.tmdbEpisodeNumber))
+    .all();
+}
+
+export interface ShowEpisodeAdminView {
+  showName: string;
+  /** Needed to query TMDB for the episodes to pick from. */
+  tmdbShowId: number;
+  episodes: ShowEpisodeRecord[];
+}
+
+/** Everything the admin episode editor needs for one show, in a single read. */
+export function getShowEpisodeAdminView(showId: number): ShowEpisodeAdminView | null {
+  const show = db
+    .select({ name: shows.name, tmdbId: shows.tmdbId })
+    .from(shows)
+    .where(eq(shows.id, showId))
+    .get();
+  if (!show) return null;
+  return {
+    showName: show.name,
+    tmdbShowId: show.tmdbId,
+    episodes: listShowEpisodeRecords(showId),
+  };
+}

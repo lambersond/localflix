@@ -64,6 +64,20 @@ export interface TmdbShowDetails {
   videos?: { results: TmdbVideo[] };
   // TMDB returns appended TV keywords under `results`, not `keywords`.
   keywords?: { results: TmdbKeyword[] };
+  /**
+   * Every season TMDB knows about, including Specials (season 0) — which is
+   * where episodes that never aired in broadcast order end up. Always present on
+   * `/tv/{id}`; optional here only so older callers stay type-compatible.
+   */
+  seasons?: TmdbSeasonSummary[];
+}
+
+/** A season as listed on the show record — enough to populate a season picker. */
+export interface TmdbSeasonSummary {
+  season_number: number;
+  name: string | null;
+  episode_count: number;
+  air_date: string | null;
 }
 
 export interface TmdbEpisode {

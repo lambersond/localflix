@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import CastRow from "@/app/components/common/CastRow";
 import KeywordChips from "@/app/components/common/KeywordChips";
 import MediaRow from "@/app/components/common/MediaRow";
+import RecordInfo from "@/app/components/common/RecordInfo";
 import ReportButton from "@/app/components/common/ReportButton";
 import Rating from "@/app/components/common/Rating";
 import VersionPicker, {
@@ -21,7 +22,7 @@ import {
   moviePlayState,
 } from "@/db/queries";
 import { formatRuntime, releaseYear, toPlayableId } from "@/lib/media";
-import { getActiveProfileId, getContentRules } from "@/lib/profile";
+import { getActiveProfile, getActiveProfileId, getContentRules } from "@/lib/profile";
 import { tmdbImage } from "@/lib/tmdb";
 
 export const dynamic = "force-dynamic";
@@ -67,6 +68,15 @@ export default async function MoviePage({
       completed: !!prog?.completed,
     };
   });
+
+  // Built only when the flag is on, so an ordinary viewer never serializes the
+  // file paths into the RSC payload. `isKids` is re-checked here rather than
+  // trusted from the write path, so the two flags can't both take effect.
+  const viewer = await getActiveProfile();
+  const showRecordInfo = viewer?.isAdmin === 1 && viewer.isKids !== 1;
+  const recordFiles = showRecordInfo
+    ? versions.map((v) => ({ label: v.label, path: v.filePath }))
+    : [];
 
   const backdrop = tmdbImage(movie.backdropPath);
   const poster = tmdbImage(movie.posterPath);
@@ -120,6 +130,9 @@ export default async function MoviePage({
               <WatchlistButton mediaType="movie" mediaId={movie.id} initialInList={inList} />
             </VersionPicker>
             <ReportButton mediaType="movie" mediaId={movie.id} />
+            {showRecordInfo ? (
+              <RecordInfo mediaType="movie" tmdbId={movie.tmdbId} files={recordFiles} />
+            ) : null}
           </div>
         </div>
       </div>

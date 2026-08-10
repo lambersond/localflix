@@ -20,6 +20,7 @@ import { AVATAR_DIR, localAvatarFile } from "@/lib/avatar-store";
 import {
   isUsableAllowance,
   KIDS_DEFAULT_CERTIFICATIONS,
+  resolveAdminFlag,
   sanitizeCertifications,
 } from "@/lib/content-rules";
 import {
@@ -173,8 +174,11 @@ export async function updateParentalControlsAction(
     .map((v) => Number(v))
     .filter((genreId) => validGenreIds.has(genreId));
 
+  // `isAdmin` is cleared here on purpose: a restricted profile must never be the
+  // one that reveals file paths and TMDB ids, and the two states are documented
+  // as mutually exclusive.
   db.update(profiles)
-    .set({ isKids: 1, allowedCertifications, allowUnrated, blockedGenreIds })
+    .set({ isKids: 1, allowedCertifications, allowUnrated, blockedGenreIds, isAdmin: 0 })
     .where(eq(profiles.id, id))
     .run();
 
@@ -194,6 +198,13 @@ export async function updateProfileAction(
   const existing = db.select().from(profiles).where(eq(profiles.id, id)).get();
   if (!existing) return { error: "Profile not found." };
 
+  const isAdmin = resolveAdminFlag({
+    activeIsKids: (await getActiveProfile())?.isKids === 1,
+    targetIsKids: existing.isKids === 1,
+    submitted: formData.get("isAdmin") === "on",
+    existing: existing.isAdmin,
+  });
+
   let avatarPath = existing.avatarPath;
   const file = formData.get("avatar") as File | null;
   if (file && file.size > 0) {
@@ -205,7 +216,7 @@ export async function updateProfileAction(
     await removeAvatar(existing.avatarPath);
   }
 
-  db.update(profiles).set({ name, avatarPath }).where(eq(profiles.id, id)).run();
+  db.update(profiles).set({ name, avatarPath, isAdmin }).where(eq(profiles.id, id)).run();
   revalidatePath("/", "layout");
   return {};
 }

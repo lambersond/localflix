@@ -8,12 +8,14 @@ import {
   findBrokenLinksAction,
   findDuplicateMoviesAction,
   findUntrackedFilesAction,
+  linkUntrackedEpisodeAction,
   listOpenReportsAction,
   matchMovieToTvAction,
   mergeDuplicateMoviesAction,
   rematchTitleAction,
   removeBrokenLinksAction,
   resolveReportAction,
+  resolveShowForFileAction,
   searchLibraryTitlesAction,
   setAutoScanEnabledAction,
   setCacheArtworkOnScanAction,
@@ -29,6 +31,8 @@ import type { UntrackedFile, UntrackedReason, UntrackedResult } from "@/lib/untr
 import ProgressBar from "@/app/components/common/ProgressBar";
 
 import MovieVersionsEditor from "./MovieVersionsEditor";
+import ShowEpisodesEditor from "./ShowEpisodesEditor";
+import TmdbEpisodePicker from "./TmdbEpisodePicker";
 import TmdbMatchPicker from "./TmdbMatchPicker";
 
 const UNTRACKED_LABEL: Record<UntrackedReason, string> = {
@@ -279,7 +283,15 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
   const [fixKey, setFixKey] = useState<string | null>(null); // open re-match picker
   const [tvKey, setTvKey] = useState<string | null>(null); // open match-to-TV picker
   const [versionsKey, setVersionsKey] = useState<string | null>(null); // open versions editor
+  const [episodesKey, setEpisodesKey] = useState<string | null>(null); // open episode editor
   const libKey = (m: LibraryMatch) => `${m.kind}-${m.id}`;
+  // Untracked file with no SxxEyy, being linked to a TMDB episode by hand. The
+  // show comes from the file's folder, so it's resolved before the picker opens.
+  const [episodeFile, setEpisodeFile] = useState<{
+    path: string;
+    showName: string;
+    tmdbShowId: number;
+  } | null>(null);
   const [reports, setReports] = useState<OpenReport[] | null>(null);
   // Duplicate-movie cleanup: which record survives each group (by filePath).
   const [dupes, setDupes] = useState<DuplicateGroup[] | null>(null);
@@ -299,6 +311,45 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
       setAssignResult({ path: file.path, ok: res.ok, message: res.message });
       if (res.ok) {
         setMatchPath(null);
+        setUntracked(await findUntrackedFilesAction()); // drop the now-tracked file
+        await refresh();
+      }
+    });
+  }
+
+  /** Open the episode picker for a show-area file the scan couldn't number. */
+  function onOpenEpisodeLink(file: UntrackedFile) {
+    if (episodeFile?.path === file.path) {
+      setEpisodeFile(null);
+      return;
+    }
+    setAssignResult(null);
+    setMatchPath(null);
+    startTransition(async () => {
+      const show = await resolveShowForFileAction(file.path);
+      if (!show) {
+        setAssignResult({
+          path: file.path,
+          ok: false,
+          message:
+            "No tracked show owns that folder yet — match the show first, then link this file.",
+        });
+        return;
+      }
+      setEpisodeFile({ path: file.path, showName: show.showName, tmdbShowId: show.tmdbShowId });
+    });
+  }
+
+  function onLinkUntrackedEpisode(path: string, seasonNumber: number, episodeNumber: number) {
+    setApplying(true);
+    setAssignResult(null);
+    startTransition(async () => {
+      const res = await linkUntrackedEpisodeAction({ path, seasonNumber, episodeNumber });
+      setApplying(false);
+      setMessage(res.message);
+      setAssignResult({ path, ok: res.ok, message: res.message });
+      if (res.ok) {
+        setEpisodeFile(null);
         setUntracked(await findUntrackedFilesAction()); // drop the now-tracked file
         await refresh();
       }
@@ -616,7 +667,9 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
       <section className="flex flex-col gap-3 rounded-lg bg-surface/50 p-5">
         <h2 className="text-lg font-semibold">Untracked files</h2>
         <p className="text-sm text-muted">
-          Find video files under MEDIA_DIR that have no library record — titles that failed to import.
+          Find video files under MEDIA_DIR that have no library record — titles that failed to
+          import. A show file with no SxxEyy in its name can be linked straight to a TMDB episode
+          instead of being renamed.
         </p>
         <div>
           <button
@@ -661,10 +714,22 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
                         disabled={applying}
                         onClick={() => {
                           setMatchPath(matchPath === u.path ? null : u.path);
+                          setEpisodeFile(null);
                           setAssignResult(null);
                         }}
                       >
                         {matchPath === u.path ? "Cancel" : "Find match"}
+                      </button>
+                    )}
+                    {u.reason === "no-episode-number" && u.area === "show" && (
+                      <button
+                        type="button"
+                        className={SECONDARY_BUTTON_CLASS}
+                        disabled={applying}
+                        onClick={() => onOpenEpisodeLink(u)}
+                        title="Pick the TMDB episode this file is, without renaming it"
+                      >
+                        {episodeFile?.path === u.path ? "Cancel" : "Link to episode"}
                       </button>
                     )}
                   </div>
@@ -675,6 +740,22 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
                       applying={applying}
                       onApply={(tmdbId) => onAssignUntracked(u, tmdbId)}
                     />
+                  )}
+                  {episodeFile?.path === u.path && (
+                    <>
+                      <p className="text-xs text-muted">
+                        Linking into{" "}
+                        <span className="font-medium text-foreground">{episodeFile.showName}</span>.
+                      </p>
+                      <TmdbEpisodePicker
+                        tmdbShowId={episodeFile.tmdbShowId}
+                        defaultSeason={1}
+                        applying={applying}
+                        onApply={(seasonNumber, episodeNumber) =>
+                          onLinkUntrackedEpisode(u.path, seasonNumber, episodeNumber)
+                        }
+                      />
+                    </>
                   )}
                   {assignResult?.path === u.path && !assignResult.ok && (
                     <p className="text-sm text-accent">{assignResult.message}</p>
@@ -691,7 +772,9 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
         <h2 className="text-lg font-semibold">Fix metadata</h2>
         <p className="text-sm text-muted">
           Search your library for a title with the wrong metadata, then re-match it to the correct
-          TMDB entry.
+          TMDB entry. For a show, <span className="font-medium text-foreground">Episodes</span>{" "}
+          points individual episodes at the right TMDB entry — for a library numbered in DVD order,
+          or a pilot filed as S01E00 that TMDB has no episode 0 for.
         </p>
         <form onSubmit={onSearchLibrary} className="flex gap-2">
           <input
@@ -751,6 +834,7 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
                             setTvKey(tvKey === key ? null : key);
                             setFixKey(null);
                             setVersionsKey(null);
+                            setEpisodesKey(null);
                           }}
                           title="Pull metadata from a TMDB TV entry, keeping it one item"
                         >
@@ -766,10 +850,27 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
                             setVersionsKey(versionsKey === key ? null : key);
                             setFixKey(null);
                             setTvKey(null);
+                            setEpisodesKey(null);
                           }}
                           title="Manage multiple files (resolutions / cuts) for this movie"
                         >
                           {versionsKey === key ? "Cancel" : "Versions"}
+                        </button>
+                      )}
+                      {m.kind === "show" && (
+                        <button
+                          type="button"
+                          className={SECONDARY_BUTTON_CLASS}
+                          disabled={applying}
+                          onClick={() => {
+                            setEpisodesKey(episodesKey === key ? null : key);
+                            setFixKey(null);
+                            setTvKey(null);
+                            setVersionsKey(null);
+                          }}
+                          title="Point individual episodes at the right TMDB entry"
+                        >
+                          {episodesKey === key ? "Cancel" : "Episodes"}
                         </button>
                       )}
                       <button
@@ -780,6 +881,7 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
                           setFixKey(fixKey === key ? null : key);
                           setTvKey(null);
                           setVersionsKey(null);
+                          setEpisodesKey(null);
                         }}
                       >
                         {fixKey === key ? "Cancel" : "Re-match"}
@@ -803,6 +905,7 @@ export default function AdminPanel({ initial }: Readonly<{ initial: AdminStatus 
                     />
                   )}
                   {versionsKey === key && <MovieVersionsEditor movieId={m.id} />}
+                  {episodesKey === key && <ShowEpisodesEditor showId={m.id} />}
                 </li>
               );
             })}

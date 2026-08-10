@@ -28,6 +28,7 @@ import {
   searchMovie,
   searchTv,
   videosOf,
+  type TmdbSeasonDetails,
   type TmdbVideo,
 } from "./tmdb";
 import { filterAvailableVideos } from "./youtube";
@@ -366,8 +367,20 @@ export function createScanner(db: DB, log: Logger) {
       bySeason.set(ep.season, list);
     }
 
+    // One fetch per season per run. A manual link can point into a season this
+    // show has no files for (Specials, typically), so the same cache serves both
+    // the season loop below and the override lookups inside it.
+    const seasonCache = new Map<number, TmdbSeasonDetails>();
+    async function seasonDetails(n: number): Promise<TmdbSeasonDetails> {
+      const hit = seasonCache.get(n);
+      if (hit) return hit;
+      const fetched = await getSeasonDetails(show.id, n);
+      seasonCache.set(n, fetched);
+      return fetched;
+    }
+
     for (const [seasonNumber, eps] of bySeason) {
-      const season = await getSeasonDetails(tmdbId, seasonNumber);
+      const season = await seasonDetails(seasonNumber);
       const seasonRow = db
         .insert(schema.seasons)
         .values({
@@ -387,7 +400,30 @@ export function createScanner(db: DB, log: Logger) {
       const tmdbEpisodes = new Map(season.episodes.map((e) => [e.episode_number, e]));
 
       for (const ep of eps) {
-        const meta = tmdbEpisodes.get(ep.episode);
+        // A record the operator linked to a different TMDB episode keeps taking
+        // its metadata from there, or a rescan would overwrite the fix with the
+        // blank/wrong entry at its own number. The link columns are absent from
+        // the `set` below, so the link itself survives untouched either way.
+        const linked = db
+          .select({
+            season: schema.episodes.tmdbSourceSeason,
+            episode: schema.episodes.tmdbSourceEpisode,
+          })
+          .from(schema.episodes)
+          .where(
+            and(
+              eq(schema.episodes.seasonId, seasonRow.id),
+              eq(schema.episodes.tmdbEpisodeNumber, ep.episode),
+            ),
+          )
+          .get();
+
+        let meta = tmdbEpisodes.get(ep.episode);
+        if (linked?.season != null && linked.episode != null) {
+          const source = await seasonDetails(linked.season);
+          meta = source.episodes.find((e) => e.episode_number === linked.episode);
+        }
+
         const { absPath, fileSize, mimeType } = fileInfo(ep.filePath);
         db.insert(schema.episodes)
           .values({

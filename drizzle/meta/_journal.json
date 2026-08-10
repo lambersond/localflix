@@ -43,6 +43,20 @@
       "when": 1786299645956,
       "tag": "0005_tidy_james_howlett",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1786375860057,
+      "tag": "0006_curved_hellcat",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1786398127711,
+      "tag": "0007_volatile_sentinel",
+      "breakpoints": true
     }
   ]
 }

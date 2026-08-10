@@ -47,7 +47,7 @@ export interface RetagResult {
 const quiet = () => {};
 
 /** Absolute path of the show folder (the dir directly under shows/ or tv/) that owns a file. */
-function showFolderOf(filePath: string): string | null {
+export function showFolderOf(filePath: string): string | null {
   const root = resolve(process.env.MEDIA_DIR ?? "./media");
   const rel = relative(root, resolve(filePath));
   if (!rel || rel.startsWith("..")) return null;

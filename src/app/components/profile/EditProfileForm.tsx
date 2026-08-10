@@ -8,7 +8,14 @@ import { AVATAR_HINT } from "@/lib/avatar";
 
 const initialState: ProfileFormState = {};
 
-export default function EditProfileForm({ profile }: Readonly<{ profile: Profile }>) {
+export default function EditProfileForm({
+  profile,
+  showAdminOption = true,
+}: Readonly<{
+  profile: Profile;
+  /** False for a restricted viewer, who must not be able to grant the flag. */
+  showAdminOption?: boolean;
+}>) {
   const [state, action, pending] = useActionState(updateProfileAction, initialState);
 
   return (
@@ -40,6 +47,17 @@ export default function EditProfileForm({ profile }: Readonly<{ profile: Profile
         />
         <span className="whitespace-nowrap">{AVATAR_HINT}</span>
       </label>
+      {showAdminOption && profile.isKids !== 1 ? (
+        <label className="flex w-full cursor-pointer items-center gap-2 text-xs text-muted">
+          <input type="checkbox" name="isAdmin" defaultChecked={profile.isAdmin === 1} />
+          <span>
+            {"Show record details"}
+            <span className="ml-2 text-muted/70">
+              Adds an ⓘ on movie and show pages with the TMDB entry and file each record points at
+            </span>
+          </span>
+        </label>
+      ) : null}
       {state.error ? <p className="w-full text-xs text-accent">{state.error}</p> : null}
     </form>
   );

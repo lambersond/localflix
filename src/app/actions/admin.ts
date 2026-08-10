@@ -8,6 +8,7 @@ import {
   findBrokenLinks,
   findDuplicateMovies,
   getMovieVersions,
+  getShowEpisodeAdminView,
   INCLUDE_NON_PLAYABLE_KEY,
   listOpenReports,
   removeBrokenLinks,
@@ -20,7 +21,17 @@ import {
   type MovieVersion,
   type OpenReport,
   type RemovalSummary,
+  type ShowEpisodeAdminView,
 } from "@/db/queries";
+import {
+  applyEpisodeLinks,
+  linkEpisodeToTmdb,
+  linkUntrackedFile,
+  showForUntrackedFile,
+  suggestEpisodeLinks,
+  unlinkEpisode,
+  type EpisodeSuggestion,
+} from "@/lib/episode-link";
 import {
   triggerArtwork,
   triggerScan,
@@ -41,12 +52,15 @@ import {
 } from "@/lib/retag";
 import {
   getMovieDetails,
+  getSeasonDetails,
   getShowDetails,
   movieDetailsToHit,
   searchMovies,
   searchShows,
   showDetailsToHit,
+  type TmdbEpisode,
   type TmdbSearchHit,
+  type TmdbSeasonSummary,
 } from "@/lib/tmdb";
 import { findUntrackedFiles, type UntrackedResult } from "@/lib/untracked";
 
@@ -118,6 +132,24 @@ function parseTmdbRef(input: string, kind: "movie" | "show"): number | null {
   if (m && (m[1].toLowerCase() === "tv" ? "show" : "movie") === kind) {
     return Number(m[2]);
   }
+  return null;
+}
+
+/**
+ * A pasted `themoviedb.org/tv/<show>/season/<s>/episode/<e>` URL — the link an
+ * operator copies straight off the episode page. Falls back to a bare `SxxEyy`
+ * or `<s>x<e>`, so either form typed by hand also lands on the right episode.
+ */
+function parseTmdbEpisodeRef(
+  input: string,
+): { seasonNumber: number; episodeNumber: number } | null {
+  const s = input.trim();
+  const url = /themoviedb\.org\/tv\/\d+\/season\/(\d+)\/episode\/(\d+)/i.exec(s);
+  if (url) return { seasonNumber: Number(url[1]), episodeNumber: Number(url[2]) };
+  const sxe = /^[Ss](\d{1,2})[\s._-]*[Ee](\d{1,3})$/.exec(s);
+  if (sxe) return { seasonNumber: Number(sxe[1]), episodeNumber: Number(sxe[2]) };
+  const nxn = /^(\d{1,2})[xX](\d{1,3})$/.exec(s);
+  if (nxn) return { seasonNumber: Number(nxn[1]), episodeNumber: Number(nxn[2]) };
   return null;
 }
 
@@ -244,5 +276,108 @@ export async function mergeDuplicateMoviesAction(input: {
 }): Promise<RetagResult> {
   const result = mergeDuplicateMovies(input);
   if (result.ok) revalidatePath("/admin");
+  return result;
+}
+
+// ── Episode ↔ TMDB links ──
+
+/** A show's episode records with their manual-link state (read-only). */
+export async function listShowEpisodesAction(
+  showId: number,
+): Promise<ShowEpisodeAdminView | null> {
+  return getShowEpisodeAdminView(showId);
+}
+
+/** Seasons TMDB lists for a show, Specials included — populates the picker (read-only). */
+export async function listTmdbSeasonsAction(
+  tmdbShowId: number,
+): Promise<{ seasons: TmdbSeasonSummary[] } | { error: string }> {
+  try {
+    const details = await getShowDetails(tmdbShowId);
+    return { seasons: details.seasons ?? [] };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** One season's episodes, to pick from (read-only). */
+export async function listTmdbEpisodesAction(
+  tmdbShowId: number,
+  seasonNumber: number,
+): Promise<{ episodes: TmdbEpisode[] } | { error: string }> {
+  try {
+    const season = await getSeasonDetails(tmdbShowId, seasonNumber);
+    return { episodes: season.episodes };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** Resolve a pasted episode URL (or `S01E02`) to season/episode numbers. */
+export async function resolveTmdbEpisodeRefAction(
+  text: string,
+): Promise<{ seasonNumber: number; episodeNumber: number } | null> {
+  return parseTmdbEpisodeRef(text);
+}
+
+/** Point one episode record at a specific TMDB episode; the record keeps its slot. */
+export async function linkEpisodeAction(input: {
+  episodeId: number;
+  seasonNumber: number;
+  episodeNumber: number;
+}): Promise<RetagResult> {
+  const result = await linkEpisodeToTmdb(input);
+  if (result.ok) {
+    revalidatePath("/admin");
+    revalidatePath("/", "layout"); // the show page renders these titles
+  }
+  return result;
+}
+
+/** Drop a manual link and go back to the record's own TMDB entry. */
+export async function unlinkEpisodeAction(episodeId: number): Promise<RetagResult> {
+  const result = await unlinkEpisode(episodeId);
+  if (result.ok) {
+    revalidatePath("/admin");
+    revalidatePath("/", "layout");
+  }
+  return result;
+}
+
+/** Propose a TMDB episode per record by filename similarity (read-only, never applied). */
+export async function suggestEpisodeLinksAction(showId: number): Promise<EpisodeSuggestion[]> {
+  return suggestEpisodeLinks(showId);
+}
+
+/** Apply a reviewed batch of proposals. */
+export async function applyEpisodeLinksAction(
+  links: { episodeId: number; seasonNumber: number; episodeNumber: number }[],
+): Promise<RetagResult> {
+  const result = await applyEpisodeLinks(links);
+  if (result.ok) {
+    revalidatePath("/admin");
+    revalidatePath("/", "layout");
+  }
+  return result;
+}
+
+/** Which tracked show owns an untracked file's folder (read-only). */
+export async function resolveShowForFileAction(
+  path: string,
+): Promise<{ showId: number; showName: string; tmdbShowId: number } | null> {
+  return showForUntrackedFile(path);
+}
+
+/** Give a file with no SxxEyy an episode record linked to a chosen TMDB episode. */
+export async function linkUntrackedEpisodeAction(input: {
+  path: string;
+  seasonNumber: number;
+  episodeNumber: number;
+}): Promise<RetagResult> {
+  const result = await linkUntrackedFile(input);
+  if (result.ok) {
+    revalidatePath("/admin");
+    revalidatePath("/", "layout");
+  }
   return result;
 }

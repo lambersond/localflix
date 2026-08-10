@@ -105,6 +105,18 @@ export const episodes = sqliteTable(
     filePath: text("file_path").notNull(),
     fileSize: integer("file_size"),
     mimeType: text("mime_type"),
+    /**
+     * Operator-chosen metadata source, set from /admin. Null (the default) means
+     * "use this row's own season/episode number", i.e. what the filename says —
+     * the original behaviour. Both columns non-null is the one signal that a
+     * record is manually linked, so there's no boolean flag to drift out of sync.
+     *
+     * Needed because a library numbered in DVD order (or a pilot filed as S01E00)
+     * has no episode at its own number on TMDB — and the real match may live in
+     * another season entirely, e.g. under Specials.
+     */
+    tmdbSourceSeason: integer("tmdb_source_season"),
+    tmdbSourceEpisode: integer("tmdb_source_episode"),
   },
   (t) => [
     uniqueIndex("episodes_season_number_unq").on(t.seasonId, t.tmdbEpisodeNumber),
@@ -281,6 +293,16 @@ export const profiles = sqliteTable("profiles", {
   allowUnrated: integer("allow_unrated").notNull().default(1),
   /** TMDB genre ids hidden from this profile. Null / [] = nothing blocked. */
   blockedGenreIds: text("blocked_genre_ids", { mode: "json" }).$type<number[]>(),
+  /**
+   * 1 = an operator's profile: movie/show detail pages reveal what each record
+   * is actually bound to (its TMDB id and the file it plays), so a bad mapping
+   * is visible without opening /admin.
+   *
+   * Display-only. It does **not** gate /admin — that stays reachable by any
+   * non-kids profile — and it is not a security boundary, since anyone on the
+   * LAN can switch profiles. Mutually exclusive with `isKids`.
+   */
+  isAdmin: integer("is_admin").notNull().default(0),
   createdAt: text("created_at").default(sql`(CURRENT_TIMESTAMP)`),
 });
 

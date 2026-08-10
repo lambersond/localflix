@@ -19,12 +19,16 @@ export async function getActiveProfileId(): Promise<number | null> {
 /**
  * The active profile row, or null. Returns null when the cookie points at a
  * profile that no longer exists (so the "Who's watching?" gate re-shows).
+ *
+ * `cache` dedupes it per request: a detail page reads it both through
+ * `getContentRules` and directly (for the record-details flag), and this keeps
+ * that one lookup rather than two.
  */
-export async function getActiveProfile(): Promise<Profile | null> {
+export const getActiveProfile = cache(async (): Promise<Profile | null> => {
   const id = await getActiveProfileId();
   if (id === null) return null;
   return getProfileById(id) ?? null;
-}
+});
 
 /**
  * The parental-control rules for the active profile — the single source every

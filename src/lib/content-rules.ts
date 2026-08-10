@@ -128,3 +128,30 @@ export function isUsableAllowance(
 ): boolean {
   return allowedCertifications.length > 0 || allowUnrated;
 }
+
+/**
+ * Whether a profile ends up holding the "show record details" flag after a save.
+ *
+ * Three rules, each with a reason:
+ * - A restricted viewer can't change it at all, so the stored value is kept.
+ *   This matters because the checkbox isn't rendered for them, and an unrendered
+ *   checkbox submits nothing — without this, a kids profile renaming itself
+ *   would silently clear a grown-up's flag.
+ * - A restricted *target* can never hold it, so the panel (which reveals file
+ *   paths and TMDB ids) can't be turned on for a kids profile.
+ * - Otherwise the submitted checkbox wins.
+ */
+export function resolveAdminFlag(input: {
+  /** Is the profile doing the saving restricted? */
+  activeIsKids: boolean;
+  /** Is the profile being saved restricted? */
+  targetIsKids: boolean;
+  /** Was the checkbox submitted as checked? */
+  submitted: boolean;
+  /** The value currently stored on the target. */
+  existing: number;
+}): number {
+  if (input.activeIsKids) return input.existing;
+  if (input.targetIsKids) return 0;
+  return input.submitted ? 1 : 0;
+}

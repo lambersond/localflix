@@ -5,6 +5,7 @@ import { notFound } from "next/navigation";
 import CastRow from "@/app/components/common/CastRow";
 import KeywordChips from "@/app/components/common/KeywordChips";
 import MediaRow from "@/app/components/common/MediaRow";
+import RecordInfo, { type RecordEpisode } from "@/app/components/common/RecordInfo";
 import ReportButton from "@/app/components/common/ReportButton";
 import ProgressBar from "@/app/components/common/ProgressBar";
 import Rating from "@/app/components/common/Rating";
@@ -14,7 +15,7 @@ import WatchedToggle from "@/app/components/profile/WatchedToggle";
 import WatchlistButton from "@/app/components/profile/WatchlistButton";
 import { getRelated, getShowDetail, getShowResume, isInWatchlist } from "@/db/queries";
 import { formatRuntime, releaseYear, toPlayableId } from "@/lib/media";
-import { getActiveProfileId, getContentRules } from "@/lib/profile";
+import { getActiveProfile, getActiveProfileId, getContentRules } from "@/lib/profile";
 import { tmdbImage } from "@/lib/tmdb";
 
 export const dynamic = "force-dynamic";
@@ -72,6 +73,26 @@ export default async function ShowPage({
   const backdrop = tmdbImage(show.backdropPath);
   const year = releaseYear(show.firstAirDate);
   const related = getRelated("show", show.id, rules);
+
+  // Built only when the flag is on: a long-running show would otherwise ship its
+  // whole episode list across the client boundary on every visit. `isKids` is
+  // re-checked here rather than trusted from the write path.
+  const viewer = await getActiveProfile();
+  const showRecordInfo = viewer?.isAdmin === 1 && viewer.isKids !== 1;
+  const recordEpisodes: RecordEpisode[] = showRecordInfo
+    ? show.seasons.flatMap((season) =>
+        season.episodes.map((ep) => ({
+          season: season.tmdbSeasonNumber,
+          episode: ep.tmdbEpisodeNumber,
+          name: ep.name,
+          fileName: ep.filePath.split("/").pop() ?? ep.filePath,
+          linked:
+            ep.tmdbSourceSeason !== null && ep.tmdbSourceEpisode !== null
+              ? { season: ep.tmdbSourceSeason, episode: ep.tmdbSourceEpisode }
+              : null,
+        })),
+      )
+    : [];
 
   return (
     <main className="flex flex-col">
@@ -147,6 +168,17 @@ export default async function ShowPage({
       </div>
 
       <div className="flex flex-col gap-8 px-4 py-10 sm:px-8">
+        {/* Below the hero rather than beside Report: that hero is absolutely
+            positioned over the backdrop, so an expanding panel would overflow
+            it — and the episode table wants the full width anyway. */}
+        {showRecordInfo ? (
+          <RecordInfo
+            mediaType="show"
+            tmdbId={show.tmdbId}
+            files={[]}
+            episodes={recordEpisodes}
+          />
+        ) : null}
         {show.seasons.length === 0 ? (
           <p className="text-muted">No episodes available yet.</p>
         ) : (

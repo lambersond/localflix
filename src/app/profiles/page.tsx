@@ -28,7 +28,7 @@ export default async function ProfilesPage() {
           >
             <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
               <ProfileAvatar profile={profile} size={64} />
-              <EditProfileForm profile={profile} />
+              <EditProfileForm profile={profile} showAdminOption={canManageControls} />
               <form action={deleteProfileAction}>
                 <input type="hidden" name="profileId" value={profile.id} />
                 <button

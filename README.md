@@ -93,6 +93,18 @@ Blocked titles are gone from every surface — home rows, Recently Added, Contin
 search, "More Like This", and hover previews — and a direct link to one (`/movie/123`, `/watch/m123`, or the
 stream URL itself) returns a plain 404. `/admin` is unavailable while a kids profile is active.
 
+### Show record details
+
+Any grown-up profile can tick **Show record details** on **Manage profiles**. Movie and show pages then carry
+an **ⓘ Record details** control next to *Report incorrect*, listing what the record is actually bound to: its
+TMDB id (linked), the file(s) it plays, and for a show every episode with its filename and any manual TMDB
+link. Seeing the TMDB title beside the filename is what makes a bad mapping obvious — a row reading
+*"The Train Job"* over `S01E01 - Serenity.mp4` is wrong at a glance. Report it from the same page and re-match
+it in [/admin](#admin-page).
+
+It's display-only: it doesn't grant access to anything (`/admin` is reachable by any grown-up profile either
+way), and a kids profile can neither hold the flag nor set it.
+
 **There is no PIN.** Like the rest of the app this trusts everyone on your LAN, so anyone at the device can
 switch back to a grown-up profile from the profile menu. Parental controls decide what a kids profile *can
 reach*, not who may use which profile.
@@ -104,7 +116,27 @@ reach*, not who may use which profile.
 - **Scan now** — run a TMDB scan on demand; shows the last run and the next scheduled run.
 - **Convert all** — transcode non-playable files to MP4, optionally deleting the originals.
 - **Cache artwork now** — download all referenced artwork to local disk (see below).
+- **Fix metadata → Episodes** — point individual episodes at the right TMDB entry (see below).
 - Toggles for **Include non-playable files** and **Download artwork during scan**.
+
+### Fixing episode metadata
+
+An episode's metadata is looked up by the number in its filename, which goes wrong more often than you'd
+expect: a library ripped in **DVD/production order** doesn't line up with TMDB's **broadcast order**, episodes
+that never aired are usually filed under **Specials (season 0)**, and a pilot named `S01E00` has no TMDB episode
+0 to match at all — so the row comes out blank.
+
+In **Fix metadata**, search the show and click **Episodes**. Each record can be pointed at any TMDB episode,
+*in any season*, by picking from the list or pasting a link like
+`themoviedb.org/tv/1437/season/1/episode/11`. **Suggest matches** does the whole show at once by comparing
+filenames to episode titles across every season (it tolerates typos — `Bushwacked` still finds `Bushwhacked`);
+proposals are shown for review and nothing is written until you apply them.
+
+A link only changes where the metadata comes from. The record keeps its number, its place in the season list,
+and its watch progress, and later scans refresh it from the episode you linked instead of overwriting your fix.
+
+A show file with **no `SxxEyy`** in its name is skipped by the scan entirely and shows up under **Untracked
+files** as *No SxxEyy*; **Link to episode** there gives it a record without renaming the file on disk.
 
 A daily scan runs automatically at **03:00 local time** (`SCAN_AT_HOUR`, set `off` to disable). Set
 `SCAN_ON_STARTUP=true` to also scan when the server boots.
