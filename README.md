@@ -41,7 +41,7 @@ the library, so fixing a handful of titles doesn't re-query thousands on TMDB. N
 home rows, search index, and browse pages.
 
 **Scan logs.** Each scan (and transcode/artwork run) writes a full, timestamped log to `LOG_DIR`
-(default `./data/logs`, e.g. `scan-2026-07-16T09-30-00-000Z.log`) so failures that scroll past the live
+(`./data/logs` locally, `/data/logs` in Docker — e.g. `scan-2026-07-16T09-30-00-000Z.log`) so failures that scroll past the live
 panel can be reviewed afterwards. Failed lookups are logged as `✗ NO TMDB MATCH`, `✗ TMDB ERROR`,
 `✗ NO SxxEyy`, or `✗ FILE MISSING`, with a per-run summary at the end.
 
@@ -115,7 +115,8 @@ Posters, backdrops, cast photos, and stills are served from `/tmdb-img/...`, whi
 local cache (`IMAGE_DIR`) and only falls back to TMDB on a miss. A scan pre-downloads everything
 (toggle: **Download artwork during scan**), so once scanned the app shows artwork with no internet —
 ideal for a NAS. Cache on demand from the admin page or with `npm run scan` (use `npm run scan --
---no-artwork` to skip). `IMAGE_DIR` is its own volume so it can live on a larger disk.
+--no-artwork` to skip). `IMAGE_DIR` sits under `/data` by default; bind-mount it separately if you want the
+cache on a larger disk.
 
 ## Self-hosting with Docker
 
@@ -128,12 +129,19 @@ docker pull lambersond/personal-media-host
 
 docker run -d --name media-host -p 3000:3000 \
   -e TMDB_API_TOKEN=... \
-  -v /nas/media:/media \                       # your library (symlinks are followed)
-  -v $(pwd)/data:/data \                       # sqlite db
-  -v /nas/artwork:/data/images \               # cached artwork (own disk; or omit to keep under /data)
-  -v $(pwd)/data/avatars:/app/public/avatars \ # persist uploaded profile avatars
+  -v /nas/media:/media \   # your library (symlinks are followed)
+  -v $(pwd)/data:/data \   # ALL app state: sqlite db, artwork, avatars, job logs
   lambersond/personal-media-host
 ```
+
+**Two mounts are all you need.** Everything the app writes lives under `/data` — `media.sqlite` (+ WAL),
+`images/` (cached artwork), `avatars/` (uploaded profile pictures) and `logs/` (per-run job logs) — so that
+single mount persists the lot. To keep artwork on a different (larger) disk, add
+`-v /nas/artwork:/data/images`, or point `IMAGE_DIR` anywhere you like.
+
+On boot the container prints the absolute paths it resolved, e.g.
+`[instrumentation] paths: db=/data/media.sqlite media=/media images=/data/images avatars=/data/avatars logs=/data/logs`.
+If any of those points inside `/app` instead of a mount, that env var isn't reaching the container.
 
 The image bundles a standalone server and system `ffmpeg`. Migrations run automatically on startup
 (`src/instrumentation.ts`), so a fresh volume is set up on first boot.
@@ -161,13 +169,17 @@ Then run it exactly as above, substituting `personal-media-host` for the image n
 
 ### Environment variables
 
-| Variable           | Default               | Purpose                                            |
-| ------------------ | --------------------- | -------------------------------------------------- |
-| `TMDB_API_TOKEN`   | —                     | TMDB v4 read token (required for scanning).        |
-| `MEDIA_DIR`        | `/media` (Docker)     | Root folder scanned for media.                     |
-| `DATABASE_PATH`    | `/data/media.sqlite`  | SQLite database file.                              |
-| `IMAGE_DIR`        | `/data/images`        | Local artwork cache (its own volume; point anywhere). |
-| `LOG_DIR`          | `/data/logs`          | Timestamped per-run scan/transcode/artwork logs.   |
-| `FFMPEG_PATH`      | `/usr/bin/ffmpeg`     | ffmpeg binary (falls back to `ffmpeg-static`).     |
-| `SCAN_AT_HOUR`     | `3`                   | Hour (0–23, local) of the daily scan; `off` to disable. |
-| `SCAN_ON_STARTUP`  | `false`               | Also scan once when the server starts.             |
+Defaults differ between the Docker image (which sets absolute paths) and a bare `npm start`, where they are
+relative to the working directory.
+
+| Variable           | Docker default        | `npm` default     | Purpose                                       |
+| ------------------ | --------------------- | ----------------- | --------------------------------------------- |
+| `TMDB_API_TOKEN`   | —                     | —                 | TMDB v4 read token (required for scanning).   |
+| `MEDIA_DIR`        | `/media`              | `./media`         | Root folder scanned for media.                |
+| `DATABASE_PATH`    | `/data/media.sqlite`  | `./media.sqlite`  | SQLite database file.                         |
+| `IMAGE_DIR`        | `/data/images`        | `./data/images`   | Local artwork cache; point it anywhere.       |
+| `AVATAR_DIR`       | `/data/avatars`       | `./data/avatars`  | Uploaded profile pictures.                    |
+| `LOG_DIR`          | `/data/logs`          | `./data/logs`     | Timestamped per-run scan/transcode/artwork logs. |
+| `FFMPEG_PATH`      | `/usr/bin/ffmpeg`     | `ffmpeg-static`   | ffmpeg binary.                                |
+| `SCAN_AT_HOUR`     | `3`                   | `3`               | Hour (0–23, local) of the daily scan; `off` to disable. |
+| `SCAN_ON_STARTUP`  | `false`               | `false`           | Also scan once when the server starts.        |

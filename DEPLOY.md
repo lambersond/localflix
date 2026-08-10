@@ -69,8 +69,55 @@ transcodes, and artwork caching, and to see the last scan time.
 - **First run is empty.** The DB is created fresh; populate it with a scan
   (`SCAN_ON_STARTUP=true` or the admin page) — a valid `TMDB_API_TOKEN` is
   required for metadata + artwork.
-- **Avatars** are stored under `/data/avatars` and served by the app's
-  `/avatars` route, so the single `/data` mount persists them — no separate
-  avatar mount is needed.
+- **One `/data` mount holds everything.** `media.sqlite` (+ WAL), cached artwork
+  (`/data/images`), uploaded avatars (`/data/avatars`, served by the app's
+  `/avatars` route) and per-run job logs (`/data/logs`) all live under it. No
+  separate artwork, avatar, or log mount is needed.
+- **Check the paths on boot.** The container logs a line like
+  `[instrumentation] paths: db=/data/media.sqlite … logs=/data/logs`. Anything
+  resolving under `/app` instead of `/data` means that env var isn't reaching
+  the container.
 - **Time zone:** `SCAN_AT_HOUR` is local time. If the daily scan fires at the
   wrong hour, set the container `TZ` env (e.g. `TZ=America/New_York`).
+
+## Upgrading from an image built before this fix
+
+Earlier images had two defects that kept data out of your `/data` mount:
+
+- `VOLUME` listed `/data/images` **nested inside** `/data`. Docker honours that
+  by mounting an *anonymous volume* over that subdirectory, so cached artwork
+  went to `/var/lib/docker/volumes/<hash>/_data` and the NAS folder showed an
+  empty `images/` directory (the shadowed mountpoint).
+- `LOG_DIR` was never set in the image, so its relative default resolved to
+  `/app/data/logs` inside the container — wiped on every recreate.
+
+Both are fixed, but the old artwork is still in the anonymous volume. Recover it
+over **SSH** (File Station can't browse `/volume1/@docker`), *before* deploying
+the new image — the new container won't mount that volume at all.
+
+```bash
+# 1. Confirm the shadowing: a "volume" row with a 64-hex name at /data/images.
+sudo docker inspect personal-media-host \
+  --format '{{range .Mounts}}{{.Type}} {{.Name}} -> {{.Destination}}{{"\n"}}{{end}}'
+
+# 2. Where that volume actually lives on disk.
+sudo docker volume inspect <name-from-step-1> --format '{{.Mountpoint}}'
+
+# 3. Stop the container, then copy the cache into your bind mount.
+sudo docker stop personal-media-host
+sudo cp -a <mountpoint>/. /volume1/docker/personal-media-host/data/images/
+```
+
+Deploy the new image, then confirm `data/images/` and `data/logs/` on the NAS
+fill up while the container runs. Each earlier redeploy likely orphaned another
+anonymous volume; list and reclaim them once you're happy:
+
+```bash
+sudo docker volume ls -qf dangling=true   # look before you delete
+sudo docker volume prune
+```
+
+If the copy in step 3 turns out to be small or empty, the cache was being
+re-fetched from TMDB all along (`/tmdb-img` falls back to the CDN on a miss, so
+this is invisible in the UI) — skip it and run **Cache artwork now** from
+`/admin` after redeploying.

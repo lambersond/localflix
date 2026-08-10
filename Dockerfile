@@ -28,6 +28,7 @@ ENV NODE_ENV=production \
     MEDIA_DIR=/media \
     IMAGE_DIR=/data/images \
     AVATAR_DIR=/data/avatars \
+    LOG_DIR=/data/logs \
     FFMPEG_PATH=/usr/bin/ffmpeg
 
 # System ffmpeg used by the transcode job + CLI.
@@ -41,12 +42,18 @@ COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/drizzle ./drizzle
 
-# Mount points: /data (sqlite + cached artwork + uploaded avatars) and /media
-# (your library, NAS bind-mount). /data/avatars is served by the /avatars route,
-# so it persists via the /data volume — no separate public/ mount needed.
+# Mount points: /data (sqlite + WAL, cached artwork, uploaded avatars, job logs)
+# and /media (your library, NAS bind-mount). Everything the app writes lives
+# under one of those two, so a single /data mount persists all app state.
 RUN mkdir -p /data /data/images /data/avatars /data/logs /media
 
-VOLUME ["/data", "/data/images", "/media"]
+# Only the two real mount points. Declaring a NESTED path here (e.g.
+# /data/images) makes Docker mount an anonymous volume over that subdirectory of
+# a /data bind mount, so the data silently lands in /var/lib/docker/volumes
+# instead of the host folder — and the host folder shows an empty directory.
+# To put artwork on another disk, bind-mount /data/images or set IMAGE_DIR;
+# neither needs a VOLUME declaration.
+VOLUME ["/data", "/media"]
 EXPOSE 3000
 
 # Report health to Container Manager. slim has no curl, so use Node's global

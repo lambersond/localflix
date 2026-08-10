@@ -3,8 +3,12 @@ import { join } from "node:path";
 
 import type { JobKind } from "./job-state";
 
-/** Where per-run job logs are written. Own volume in Docker (`/data/logs`). */
-const LOG_DIR = process.env.LOG_DIR ?? "./data/logs";
+/**
+ * Where per-run job logs are written. The Docker image sets this to `/data/logs`
+ * so logs land in the mounted volume; bare `npm` runs fall back to `./data/logs`
+ * relative to the working directory.
+ */
+export const LOG_DIR = process.env.LOG_DIR ?? "./data/logs";
 
 export interface JobLog {
   /** Absolute-or-relative path of the log file on disk. */

@@ -20,11 +20,14 @@ services:
       DATABASE_PATH: "/data/media.sqlite"
       MEDIA_DIR: "/media"
       IMAGE_DIR: "/data/images"
+      LOG_DIR: "/data/logs"
     volumes:
       # Your library — the externally-managed CMS share. Read-write so the admin
       # page's in-container transcode/prep can write converted files back.
       - /volume1/media:/media:rw
-      # SQLite DB + WAL, cached artwork (/data/images), AND uploaded profile
-      # avatars (/data/avatars) all live here — one mount persists everything.
+      # Everything the app writes lives here: SQLite DB + WAL, cached artwork
+      # (/data/images), uploaded avatars (/data/avatars) and job logs
+      # (/data/logs) — one mount persists all of it. To put artwork on another
+      # disk, add an explicit `- /volume1/artwork:/data/images:rw` line.
       # MUST be a LOCAL NAS volume (not SMB/NFS) — WAL needs real file locking.
       - /volume1/docker/personal-media-host/data:/data:rw

@@ -3,8 +3,27 @@ import path from "node:path";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 
 import { db } from "@/db";
+import { AVATAR_DIR } from "@/lib/avatar-store";
+import { IMAGE_DIR } from "@/lib/images";
+import { LOG_DIR } from "@/lib/logs";
 import { startScheduler } from "@/lib/scheduler";
 import { ensureSearchIndex, reindexSearch, searchIndexCount } from "@/lib/search-index";
+
+// Report where this process will actually read and write, resolved to absolute
+// paths. A path that unexpectedly starts with the working directory instead of
+// a mount point (e.g. /app/data/logs rather than /data/logs) means an env var
+// isn't reaching the container — otherwise a silent, hard-to-spot failure.
+// Values come from the modules that own them, so this can't drift from reality.
+console.log(
+  "[instrumentation] paths: " +
+    [
+      `db=${path.resolve(process.env.DATABASE_PATH ?? "./media.sqlite")}`,
+      `media=${path.resolve(process.env.MEDIA_DIR ?? "./media")}`,
+      `images=${path.resolve(IMAGE_DIR)}`,
+      `avatars=${path.resolve(AVATAR_DIR)}`,
+      `logs=${path.resolve(LOG_DIR)}`,
+    ].join(" "),
+);
 
 // Apply pending migrations at startup. In Docker the standalone server can't run
 // drizzle-kit, so this is how the schema is created/updated on first boot. The
