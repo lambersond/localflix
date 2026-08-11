@@ -30,6 +30,20 @@ export default function ProfileSwitcher({
     return () => document.removeEventListener("mousedown", onClick);
   }, []);
 
+  // Close once the switch has actually landed, by adjusting state during render
+  // as the active profile changes.
+  //
+  // This must NOT be done from the submit button's onClick: submitting is the
+  // click's default action, so closing there unmounts the <form> before the
+  // browser dispatches `submit`, and the server action never runs — silently,
+  // with no request at all. Setting the cookie re-renders this component in
+  // place with a new `activeProfile`, which is the signal picked up here.
+  const [openedFor, setOpenedFor] = useState(activeProfile.id);
+  if (openedFor !== activeProfile.id) {
+    setOpenedFor(activeProfile.id);
+    setOpen(false);
+  }
+
   const others = profiles.filter((p) => p.id !== activeProfile.id);
 
   return (
@@ -54,7 +68,6 @@ export default function ProfileSwitcher({
               <input type="hidden" name="profileId" value={profile.id} />
               <button
                 type="submit"
-                onClick={() => setOpen(false)}
                 className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm transition hover:bg-white/10"
               >
                 <ProfileAvatar profile={profile} size={24} />
